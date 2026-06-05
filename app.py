@@ -1,0 +1,834 @@
+"""
+app.py — Aplicación principal de Finanzas Personales.
+Nuevas funcionalidades: contraseña, recordatorios, reporte IA, chat de voz.
+
+Ejecutar:
+    pip install -r requirements.txt
+    python app.py
+Acceder en: http://localhost:8050
+"""
+
+import json
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+from datetime import datetime, date
+
+import dash
+from dash import dcc, html, dash_table, Input, Output, State, no_update, callback_context
+import dash_bootstrap_components as dbc
+from flask import request, jsonify
+
+from database import (
+    init_db, register_user, login_user,
+    get_categories, add_transaction, delete_transaction,
+    get_transactions, get_monthly_summary, get_expenses_by_category,
+    get_monthly_detail,
+)
+from analytics import (
+    get_current_balance, get_monthly_kpis, get_liquidity_alerts,
+    get_reminder_alerts, get_investment_recommendations, get_cash_flow_projection,
+)
+
+# ──────────────────────────────────────────────
+# Init
+# ──────────────────────────────────────────────
+
+init_db()
+
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.CYBORG],
+    suppress_callback_exceptions=True,
+    title="Finanzas Personales",
+)
+
+# ──────────────────────────────────────────────
+# Colores y helpers
+# ──────────────────────────────────────────────
+
+C = {
+    "primary": "#00d4aa", "income": "#3b9eff", "expense": "#ff5c5c",
+    "warning": "#ffb84d", "bg_card": "#1c2333", "bg_dark": "#10131a",
+    "text": "#e0e0e0",    "muted": "#7a8595",   "border": "#2e3a4a",
+}
+PAPER_BG = "rgba(0,0,0,0)"; PLOT_BG = "rgba(0,0,0,0)"; GRID_COL = "#1e2a38"
+
+def cs(border=C["border"]):
+    return {"backgroundColor": C["bg_card"], "border": f"1px solid {border}", "borderRadius": "12px"}
+
+def kpi_card(title, value, subtitle, color, icon):
+    return dbc.Card(dbc.CardBody(html.Div([
+        html.Span(icon, style={"fontSize": "2.2rem"}),
+        html.Div([
+            html.P(title,    style={"color": C["muted"],  "fontSize": "0.78rem", "margin": "0"}),
+            html.H4(value,   style={"color": color,       "fontWeight": "700",   "margin": "2px 0"}),
+            html.P(subtitle, style={"color": C["muted"],  "fontSize": "0.75rem", "margin": "0"}),
+        ], style={"marginLeft": "14px"}),
+    ], style={"display": "flex", "alignItems": "center"})), style=cs(color))
+
+def cl(title, extra=None):
+    base = dict(
+        title=dict(text=title, font=dict(color=C["text"], size=14)),
+        paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
+        font=dict(color=C["text"], size=12),
+        xaxis=dict(gridcolor=GRID_COL), yaxis=dict(gridcolor=GRID_COL),
+        legend=dict(bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=50, b=40, l=40, r=20), height=340,
+    )
+    if extra: base.update(extra)
+    return base
+
+
+# ──────────────────────────────────────────────
+# Layout principal
+# ──────────────────────────────────────────────
+
+app.layout = dbc.Container([
+    # Header
+    dbc.Row(dbc.Col(html.Div([
+        html.H2("💰 Finanzas Personales", style={"color": C["primary"], "fontWeight": "800", "margin": "0"}),
+        html.P("Gestión inteligente de tu dinero", style={"color": C["muted"], "margin": "0"}),
+    ], style={"padding": "22px 0 14px"}))),
+
+    # Login
+    dbc.Row([
+        dbc.Col([
+            dbc.Label("Usuario", style={"color": C["muted"], "marginBottom": "4px"}),
+            dbc.Input(id="inp-user", placeholder="Nombre de usuario...", type="text", className="mb-2"),
+            dbc.Label("Contraseña", style={"color": C["muted"], "marginBottom": "4px"}),
+            dbc.Input(id="inp-pass", placeholder="Contraseña...", type="password", className="mb-2"),
+            dbc.Button("Ingresar / Registrarse", id="btn-login", color="success", n_clicks=0),
+            html.Small(" Si sos nuevo usuario, se creará tu cuenta automáticamente.",
+                       style={"color": C["muted"], "marginLeft": "10px"}),
+        ], md=5),
+        dbc.Col(html.Div(id="user-info",
+                style={"color": C["primary"], "paddingTop": "36px", "fontWeight": "600"}), md=7),
+    ], className="mb-4",
+       style={"backgroundColor": C["bg_card"], "padding": "18px",
+              "borderRadius": "12px", "border": f"1px solid {C['border']}"}),
+
+    # Stores y helpers siempre presentes
+    dcc.Store(id="active-user-id",    data=None),
+    dcc.Store(id="saved-flag",        data=0),
+    dcc.Store(id="voice-result-store",data=None),
+    dcc.Interval(id="voice-poll-interval", interval=500, n_intervals=0),
+    html.Div(id="voice-start-dummy",  style={"display": "none"}),
+    html.Div(id="voice-stop-dummy",   style={"display": "none"}),
+
+    # Contenido principal
+    html.Div(id="main-content"),
+
+    # Toast
+    dbc.Toast(id="toast-msg", header="", is_open=False, duration=3500,
+              style={"position":"fixed","top":20,"right":20,"zIndex":9999,"minWidth":"280px"}),
+], fluid=True, style={"backgroundColor": C["bg_dark"], "minHeight": "100vh", "padding": "0 24px 40px"})
+
+
+# ──────────────────────────────────────────────
+# Login callback
+# ──────────────────────────────────────────────
+
+@app.callback(
+    Output("active-user-id", "data"),
+    Output("user-info",      "children"),
+    Output("main-content",   "children"),
+    Input("btn-login",       "n_clicks"),
+    State("inp-user",  "value"),
+    State("inp-pass",  "value"),
+    prevent_initial_call=True,
+)
+def login(n, username, password):
+    if not username or not username.strip():
+        return no_update, dbc.Alert("Ingresá un nombre de usuario.", color="warning"), no_update
+    if not password:
+        return no_update, dbc.Alert("Ingresá una contraseña.", color="warning"), no_update
+
+    username = username.strip()
+
+    # Intentar login; si no existe, registrar
+    user_id, err = login_user(username, password)
+    if user_id is None:
+        if err == "Usuario no encontrado.":
+            user_id, reg_err = register_user(username, password)
+            if reg_err:
+                return no_update, dbc.Alert(reg_err, color="danger"), no_update
+            info_msg = f"✅ Cuenta creada: {username}  (ID #{user_id})"
+        else:
+            return no_update, dbc.Alert(err, color="danger"), no_update
+    else:
+        info_msg = f"✅ Sesión activa: {username}  (ID #{user_id})"
+
+    tabs = dbc.Tabs([
+        dbc.Tab(label="📊  Dashboard",       tab_id="dashboard"),
+        dbc.Tab(label="💳  Transacciones",   tab_id="transactions"),
+        dbc.Tab(label="📅  Flujo de Fondos", tab_id="cashflow"),
+        dbc.Tab(label="🚨  Alertas",         tab_id="alerts"),
+        dbc.Tab(label="📈  Inversiones",     tab_id="investments"),
+        dbc.Tab(label="📋  Reporte IA",      tab_id="report"),
+        dbc.Tab(label="🎙️  Voz",            tab_id="voice"),
+    ], id="main-tabs", active_tab="dashboard", className="mb-4")
+
+    return user_id, info_msg, html.Div([tabs, html.Div(id="tab-content")])
+
+
+# ──────────────────────────────────────────────
+# Render de tabs
+# ──────────────────────────────────────────────
+
+@app.callback(
+    Output("tab-content",    "children"),
+    Input("main-tabs",       "active_tab"),
+    Input("saved-flag",      "data"),
+    State("active-user-id",  "data"),
+)
+def render_tab(tab, _, uid):
+    if not uid: return html.Div()
+    ctx = callback_context
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
+    if trigger == "saved-flag" and tab in ["report", "voice"]:
+        return no_update
+    if tab == "dashboard":    return build_dashboard(uid)
+    if tab == "transactions": return build_transactions(uid)
+    if tab == "cashflow":     return build_cashflow(uid)
+    if tab == "alerts":       return build_alerts(uid)
+    if tab == "investments":  return build_investments(uid)
+    if tab == "report":       return build_report(uid)
+    if tab == "voice":        return build_voice(uid)
+    return html.Div()
+
+
+# ══════════════════════════════════════════════
+# TAB 1 — Dashboard
+# ══════════════════════════════════════════════
+
+def build_dashboard(uid):
+    ym   = datetime.now().strftime("%Y-%m")
+    kpis = get_monthly_kpis(uid, ym)
+    bal  = get_current_balance(uid)
+
+    kpi_row = dbc.Row([
+        dbc.Col(kpi_card("Balance Total",    f"${bal:,.2f}",               "Acumulado",         C["primary"], "💰"), md=3, sm=6, className="mb-3"),
+        dbc.Col(kpi_card("Ingresos del Mes", f"${kpis['income']:,.2f}",    ym,                  C["income"],  "📥"), md=3, sm=6, className="mb-3"),
+        dbc.Col(kpi_card("Gastos del Mes",   f"${kpis['expense']:,.2f}",   ym,                  C["expense"], "📤"), md=3, sm=6, className="mb-3"),
+        dbc.Col(kpi_card("Tasa de Ahorro",   f"{kpis['savings_rate']:.1f}%","Del ingreso",      C["warning"], "💹"), md=3, sm=6, className="mb-3"),
+    ], className="mb-2")
+
+    mdf = get_monthly_summary(uid)
+    fb  = go.Figure()
+    if not mdf.empty:
+        fb.add_trace(go.Bar(name="Ingresos", x=mdf[mdf.type=="income"]["month"],  y=mdf[mdf.type=="income"]["total"],  marker_color=C["income"],  opacity=0.85, marker_line_width=0))
+        fb.add_trace(go.Bar(name="Gastos",   x=mdf[mdf.type=="expense"]["month"], y=mdf[mdf.type=="expense"]["total"], marker_color=C["expense"], opacity=0.85, marker_line_width=0))
+    fb.update_layout(**cl("Ingresos vs Gastos por Mes", {"barmode": "group"}))
+
+    today = datetime.now()
+    cdf   = get_expenses_by_category(uid, today.replace(day=1).strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
+    if not cdf.empty:
+        fp = px.pie(cdf, values="total", names="category", hole=0.42,
+                    color_discrete_sequence=px.colors.qualitative.Pastel)
+        fp.update_traces(textposition="inside", textinfo="percent+label")
+        fp.update_layout(**cl(f"Gastos por Rubro ({ym})"))
+    else:
+        fp = go.Figure(); fp.update_layout(**cl(f"Gastos por Rubro ({ym}) — Sin datos"))
+
+    proj = get_cash_flow_projection(uid, 3, 4)
+    pf   = pd.DataFrame(proj)
+    fl   = go.Figure()
+    if not pf.empty:
+        past = pf[~pf.is_future]; fut = pf[pf.is_future]
+        fl.add_trace(go.Scatter(x=past.month, y=past.balance, name="Balance real",
+            line=dict(color=C["primary"], width=2.5), fill="tozeroy", fillcolor="rgba(0,212,170,0.08)"))
+        if not fut.empty:
+            fl.add_trace(go.Scatter(x=pd.concat([past.tail(1), fut]).month,
+                y=pd.concat([past.tail(1), fut]).balance, name="Proyectado",
+                line=dict(color=C["warning"], width=2, dash="dot")))
+    fl.update_layout(**cl("Evolución del Balance", {"height": 300}))
+
+    txs = get_transactions(uid)[:8]
+    tbl = dash_table.DataTable(
+        data=[{"Tipo": "▲ Ingreso" if t[1]=="income" else "▼ Gasto", "Monto": f"${t[2]:,.2f}",
+               "Categoría": t[3] or "—", "Descripción": t[4] or "—", "Fecha": t[5]} for t in txs],
+        columns=[{"name": n, "id": n} for n in ["Tipo","Monto","Categoría","Descripción","Fecha"]],
+        style_table={"overflowX":"auto"},
+        style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"padding":"9px 12px","border":f"1px solid {C['border']}","fontSize":"0.88rem"},
+        style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
+        style_data_conditional=[
+            {"if":{"filter_query":'{Tipo} contains "Ingreso"'},"color":C["income"]},
+            {"if":{"filter_query":'{Tipo} contains "Gasto"'},"color":C["expense"]},
+        ],
+    )
+
+    return html.Div([
+        kpi_row,
+        dbc.Row([
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config={"displayModeBar":False})), style=cs()), md=7, className="mb-3"),
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config={"displayModeBar":False})), style=cs()), md=5, className="mb-3"),
+        ]),
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config={"displayModeBar":False})), style=cs(), className="mb-3"),
+        dbc.Card([
+            dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
+            dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
+        ], style=cs()),
+    ])
+
+
+# ══════════════════════════════════════════════
+# TAB 2 — Transacciones
+# ══════════════════════════════════════════════
+
+def build_transactions(uid):
+    exp_cats = get_categories(uid, "expense")
+    def opts(cats, e): return [{"label": f"{e} {c[1]}", "value": c[0]} for c in cats]
+    txs = get_transactions(uid)
+
+    form = dbc.Card([
+        dbc.CardHeader(html.H6("➕  Nueva Transacción", style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([dbc.Label("Tipo",style={"color":C["muted"]}),
+                         dbc.RadioItems(id="t-type",options=[{"label":"📥 Ingreso","value":"income"},{"label":"📤 Gasto","value":"expense"}],value="expense",inline=True)], md=4),
+                dbc.Col([dbc.Label("Monto ($)",style={"color":C["muted"]}),
+                         dbc.Input(id="t-amount",type="number",placeholder="0.00",min=0,step="0.01")], md=4),
+                dbc.Col([dbc.Label("Fecha",style={"color":C["muted"]}),
+                         dbc.Input(id="t-date",type="date",value=date.today().isoformat())], md=4),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col([dbc.Label("Categoría",style={"color":C["muted"]}),
+                         dcc.Dropdown(id="t-category",options=opts(exp_cats,"💸"),placeholder="Seleccionar...",style={"color":"#000"})], md=4),
+                dbc.Col([dbc.Label("Descripción",style={"color":C["muted"]}),
+                         dbc.Input(id="t-desc",type="text",placeholder="Ej: Supermercado Día")], md=8),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col(dbc.Checklist(id="t-recurring",
+                    options=[{"label":"  Programar como pago recurrente","value":"yes"}],value=[]), md=6),
+                dbc.Col(html.Div([dbc.Label("Repetir (meses)",style={"color":C["muted"]}),
+                    dbc.Input(id="t-months",type="number",value=3,min=1,max=24)],
+                    id="recurring-div",style={"display":"none"}), md=3),
+                dbc.Col(dbc.Checklist(id="t-reminder",
+                    options=[{"label":"  🔔 Recordatorio 24hs antes","value":"yes"}],value=[]), md=3),
+            ], className="mb-3"),
+            dbc.Button("💾  Guardar", id="btn-save", color="success", n_clicks=0),
+            html.Div(id="t-feedback", className="mt-3"),
+        ]),
+    ], style=cs(C["primary"]), className="mb-4")
+
+    table_card = dbc.Card([
+        dbc.CardHeader(html.H6("📋  Historial", style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+        dbc.CardBody(dash_table.DataTable(
+            id="tx-table", data=_tx_rows(txs), page_size=15,
+            columns=[{"name":n,"id":n} for n in ["ID","Tipo","Monto","Categoría","Descripción","Fecha","Prog.","🔔"]],
+            row_deletable=True, filter_action="native", sort_action="native",
+            style_table={"overflowX":"auto"},
+            style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"padding":"8px 12px","border":f"1px solid {C['border']}","fontSize":"0.87rem"},
+            style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
+            style_data_conditional=[
+                {"if":{"filter_query":'{Tipo} = "INGRESO"'},"color":C["income"]},
+                {"if":{"filter_query":'{Tipo} = "GASTO"'},  "color":C["expense"]},
+            ],
+        )),
+    ], style=cs())
+    return html.Div([form, table_card])
+
+def _tx_rows(txs):
+    return [{"ID":t[0],"Tipo":"INGRESO" if t[1]=="income" else "GASTO","Monto":f"${t[2]:,.2f}",
+             "Categoría":t[3] or "—","Descripción":t[4] or "—","Fecha":t[5],
+             "Prog.":"✓" if t[6] else "","🔔":"✓" if t[7] else ""} for t in txs]
+
+
+# ══════════════════════════════════════════════
+# TAB 3 — Flujo de Fondos
+# ══════════════════════════════════════════════
+
+def build_cashflow(uid):
+    proj = get_cash_flow_projection(uid, 2, 6)
+    pf   = pd.DataFrame(proj)
+    fig  = go.Figure()
+    if not pf.empty:
+        past = pf[~pf.is_future]; fut = pf[pf.is_future]
+        fig.add_trace(go.Bar(x=pf.month, y=pf.income,              name="Ingresos",  marker_color=C["income"],  opacity=0.75, marker_line_width=0, yaxis="y"))
+        fig.add_trace(go.Bar(x=pf.month, y=[-e for e in pf.expense],name="Gastos (−)",marker_color=C["expense"], opacity=0.75, marker_line_width=0, yaxis="y"))
+        fig.add_trace(go.Scatter(x=past.month, y=past.balance, name="Balance real", yaxis="y2", line=dict(color=C["primary"],width=2.5)))
+        if not fut.empty:
+            join = pd.concat([past.tail(1), fut])
+            fig.add_trace(go.Scatter(x=join.month, y=join.balance, name="Proyectado", yaxis="y2", line=dict(color=C["warning"],width=2,dash="dot")))
+            fig.add_vrect(x0=fut.iloc[0].month, x1=pf.iloc[-1].month, fillcolor="rgba(255,184,77,0.05)",
+                          line_width=0, annotation_text="▶ Proyectado", annotation_position="top left",
+                          annotation_font_color=C["warning"])
+    fig.update_layout(**cl("Flujo de Fondos", {"barmode":"relative","height":420,
+        "yaxis":dict(title="Ingresos / Gastos",gridcolor=GRID_COL),
+        "yaxis2":dict(title="Balance",overlaying="y",side="right",showgrid=False)}))
+
+    rows = [{"Mes":p["month"],"Ingresos":f"${p['income']:,.2f}","Gastos":f"${p['expense']:,.2f}",
+             "Neto":f"${p['net']:,.2f}","Balance":f"${p['balance']:,.2f}",
+             "Estado":"🔮 Proyectado" if p["is_future"] else "✅ Real"} for p in proj]
+    return html.Div([
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fig, config={"displayModeBar":False})), style=cs(), className="mb-4"),
+        dbc.Card([
+            dbc.CardHeader(html.H6("Detalle mensual", style={"color":C["primary"],"margin":"0"})),
+            dbc.CardBody(dash_table.DataTable(data=rows,
+                columns=[{"name":n,"id":n} for n in ["Mes","Ingresos","Gastos","Neto","Balance","Estado"]],
+                style_table={"overflowX":"auto"},
+                style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"textAlign":"center","padding":"9px","border":f"1px solid {C['border']}"},
+                style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
+                style_data_conditional=[
+                    {"if":{"filter_query":'{Estado} contains "Proyectado"'},"backgroundColor":"#1a1f15"},
+                    {"if":{"filter_query":'{Neto} contains "-"'},"color":C["expense"]},
+                ])),
+        ], style=cs()),
+    ])
+
+
+# ══════════════════════════════════════════════
+# TAB 4 — Alertas
+# ══════════════════════════════════════════════
+
+def build_alerts(uid):
+    reminders = get_reminder_alerts(uid)
+    liquidity = get_liquidity_alerts(uid, months_ahead=4)
+
+    rem_section = html.Div()
+    if reminders:
+        rem_section = html.Div([
+            html.H5("🔔  Recordatorios", style={"color":"white","marginBottom":"12px"}),
+            *[dbc.Alert(a["message"], color="info", className="mb-2") for a in reminders],
+            html.Hr(),
+        ])
+
+    if not liquidity:
+        liq_section = dbc.Alert([
+            html.H5("✅  Sin alertas de liquidez", className="alert-heading"), html.Hr(),
+            html.P("El flujo de fondos proyectado se ve saludable en los próximos meses."),
+        ], color="success")
+    else:
+        liq_section = html.Div([
+            *[dbc.Alert(a["message"], color="danger" if a["severity"]=="danger" else "warning", className="mb-3")
+              for a in liquidity],
+            dbc.Card([
+                dbc.CardHeader(html.H6("💡  Consejos de liquidez", style={"color":C["warning"],"margin":"0"})),
+                dbc.CardBody(html.Ul([
+                    html.Li("Identificá gastos no esenciales y reducí los que puedas."),
+                    html.Li("Adelantá cobros pendientes o buscá ingresos adicionales."),
+                    html.Li("Negociá plazos de pago con proveedores."),
+                    html.Li("Mantené un fondo de emergencia de 3 meses de gastos fijos."),
+                ], style={"color":C["text"]})),
+            ], style=cs(C["warning"])),
+        ])
+
+    return html.Div([
+        html.H5("🚨  Alertas", style={"color":"white","marginBottom":"20px"}),
+        rem_section,
+        html.H5("💧  Liquidez", style={"color":"white","marginBottom":"12px"}),
+        liq_section,
+    ])
+
+
+# ══════════════════════════════════════════════
+# TAB 5 — Inversiones
+# ══════════════════════════════════════════════
+
+def build_investments(uid):
+    bal  = get_current_balance(uid)
+    kpis = get_monthly_kpis(uid)
+    surp = max(0.0, bal)
+    recs = get_investment_recommendations(surp)
+    RC   = {"Muy Bajo":"success","Bajo":"info","Bajo–Medio":"info","Medio":"warning",
+            "Medio–Alto":"warning","Alto":"danger","Diversificado":"primary","—":"secondary"}
+
+    summary = dbc.Row([
+        dbc.Col(dbc.Card(dbc.CardBody([html.P("Capital disponible",style={"color":C["muted"],"fontSize":"0.8rem","margin":"0"}),html.H3(f"${surp:,.2f}",style={"color":C["primary"],"margin":"4px 0"})]),style=cs(C["primary"])),md=4,className="mb-3"),
+        dbc.Col(dbc.Card(dbc.CardBody([html.P("Perfil sugerido",style={"color":C["muted"],"fontSize":"0.8rem","margin":"0"}),html.H4("Moderado" if surp>200_000 else "Conservador",style={"color":C["warning"],"margin":"4px 0"})]),style=cs(C["warning"])),md=4,className="mb-3"),
+        dbc.Col(dbc.Card(dbc.CardBody([html.P("Tasa de ahorro mensual",style={"color":C["muted"],"fontSize":"0.8rem","margin":"0"}),html.H4(f"{kpis['savings_rate']:.1f} %",style={"color":C["income"],"margin":"4px 0"})]),style=cs(C["income"])),md=4,className="mb-3"),
+    ], className="mb-3")
+
+    cols = [dbc.Col(dbc.Card(dbc.CardBody([
+        html.H3(r["icon"],style={"marginBottom":"8px"}),
+        html.H6(r["title"],style={"color":"white","fontWeight":"700"}),
+        html.P(r["description"],style={"color":C["muted"],"fontSize":"0.83rem"}),
+        dbc.Badge(f"Riesgo: {r.get('risk','—')}",color=RC.get(r.get("risk","—"),"secondary"),className="mt-auto"),
+    ],style={"display":"flex","flexDirection":"column","height":"100%"}),style={**cs(),"height":"100%"}),md=4,className="mb-3") for r in recs]
+
+    return html.Div([
+        html.H5("📈  Recomendaciones de Inversión",style={"color":"white","marginBottom":"18px"}),
+        summary, dbc.Row(cols),
+        dbc.Alert([html.Strong("⚠️  Aviso: "),"Recomendaciones orientativas. Consultá un asesor certificado antes de invertir."],color="secondary",className="mt-2"),
+    ])
+
+
+# ══════════════════════════════════════════════
+# TAB 6 — Reporte IA
+# ══════════════════════════════════════════════
+
+def _month_options(n=12):
+    opts = []; today = datetime.now()
+    names = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+    for i in range(1, n + 1):
+        m = today.month - i; y = today.year
+        while m <= 0: m += 12; y -= 1
+        opts.append({"label": f"{names[m-1]} {y}", "value": f"{y}-{m:02d}"})
+    return opts
+
+def build_report(uid):
+    return html.Div([
+        html.H5("📋  Reporte Mensual con IA", style={"color":"white","marginBottom":"18px"}),
+        dbc.Card([
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Seleccioná el mes", style={"color":C["muted"]}),
+                        dcc.Dropdown(id="report-month", options=_month_options(),
+                                     value=_month_options()[0]["value"],
+                                     style={"color":"#000"}, clearable=False),
+                    ], md=4),
+                    dbc.Col(dbc.Button("📊  Generar Reporte", id="btn-report",
+                                       color="primary", n_clicks=0,
+                                       style={"marginTop":"24px"}), md=3),
+                ]),
+            ])
+        ], style=cs(C["primary"]), className="mb-4"),
+
+        dcc.Loading(html.Div(id="report-output"), type="circle",
+                    color=C["primary"]),
+    ])
+
+
+# ══════════════════════════════════════════════
+# TAB 7 — Chat de Voz
+# ══════════════════════════════════════════════
+
+def build_voice(uid):
+    cats     = get_categories(uid)
+    cat_opts = [{"label": c[1], "value": c[0]} for c in cats]
+
+    instructions = dbc.Alert([
+        html.H6("📋  Instrucciones", className="alert-heading"),
+        html.P("Hacé clic en Iniciar, hablá claramente y luego detené la grabación. Ejemplos:"),
+        html.Ul([
+            html.Li('"Gasté 1500 pesos en el supermercado hoy"'),
+            html.Li('"Cobré 80000 de sueldo"'),
+            html.Li('"Pagué 15000 de alquiler ayer"'),
+        ], style={"marginBottom": "0"}),
+    ], color="info")
+
+    controls = dbc.Card([
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col(dbc.Button("🎙️  Iniciar Grabación", id="btn-start-record",
+                                   color="danger", n_clicks=0), width="auto"),
+                dbc.Col(dbc.Button("⏹️  Detener",          id="btn-stop-record",
+                                   color="secondary", n_clicks=0), width="auto"),
+                dbc.Col(html.Div("● En espera", id="voice-status",
+                                 style={"color":C["muted"],"paddingTop":"8px","fontWeight":"600"})),
+            ], align="center"),
+        ])
+    ], style=cs(), className="mb-3")
+
+    form = dbc.Card([
+        dbc.CardHeader(html.H6("💳  Transacción Detectada", style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+        dbc.CardBody([
+            dbc.Card([
+                dbc.CardHeader("📝 Transcripción"),
+                dbc.CardBody(html.P("—", id="voice-transcript-text",
+                                    style={"color":C["muted"],"fontStyle":"italic","margin":"0"})),
+            ], style=cs(), className="mb-3", id="voice-transcript-card"),
+
+            dbc.Row([
+                dbc.Col([dbc.Label("Tipo",style={"color":C["muted"]}),
+                         dbc.RadioItems(id="t-voice-type",
+                             options=[{"label":"📥 Ingreso","value":"income"},{"label":"📤 Gasto","value":"expense"}],
+                             value="expense", inline=True)], md=4),
+                dbc.Col([dbc.Label("Monto ($)",style={"color":C["muted"]}),
+                         dbc.Input(id="t-voice-amount",type="number",value=0,min=0)], md=4),
+                dbc.Col([dbc.Label("Fecha",style={"color":C["muted"]}),
+                         dbc.Input(id="t-voice-date",type="date",value=date.today().isoformat())], md=4),
+            ], className="mb-3"),
+            dbc.Row([
+                dbc.Col([dbc.Label("Categoría",style={"color":C["muted"]}),
+                         dcc.Dropdown(id="t-voice-category",options=cat_opts,style={"color":"#000"})], md=4),
+                dbc.Col([dbc.Label("Descripción",style={"color":C["muted"]}),
+                         dbc.Input(id="t-voice-desc",type="text")], md=8),
+            ], className="mb-3"),
+            dbc.Button("✅  Confirmar y Guardar", id="btn-voice-confirm",
+                       color="success", n_clicks=0),
+            html.Div(id="voice-confirm-feedback", className="mt-3"),
+        ]),
+    ], style=cs(C["primary"]))
+
+    return html.Div([instructions, controls, form])
+
+
+# ──────────────────────────────────────────────
+# Callbacks de interacción — Transacciones
+# ──────────────────────────────────────────────
+
+@app.callback(Output("recurring-div","style"), Input("t-recurring","value"))
+def toggle_recurring(v):
+    return {"display":"block"} if v and "yes" in v else {"display":"none"}
+
+@app.callback(Output("t-category","options"), Input("t-type","value"), State("active-user-id","data"))
+def upd_cats(type_val, uid):
+    if not uid: return []
+    cats = get_categories(uid, type_val)
+    e = "💰" if type_val=="income" else "💸"
+    return [{"label":f"{e} {c[1]}","value":c[0]} for c in cats]
+
+@app.callback(
+    Output("t-feedback","children"), Output("t-amount","value"), Output("t-desc","value"),
+    Output("tx-table","data"),       Output("saved-flag","data"),
+    Output("toast-msg","children"),  Output("toast-msg","header"), Output("toast-msg","is_open"),
+    Input("btn-save","n_clicks"),
+    State("t-type","value"),    State("t-amount","value"),   State("t-category","value"),
+    State("t-desc","value"),    State("t-date","value"),     State("t-recurring","value"),
+    State("t-months","value"),  State("t-reminder","value"), State("saved-flag","data"),
+    State("active-user-id","data"),
+    prevent_initial_call=True,
+)
+def save_tx(n, ttype, amount, category, desc, txdate, recurring, months, reminder, flag, uid):
+    if not uid: return dbc.Alert("Sin sesión.", color="danger"), amount, desc, no_update, flag,"","",False
+    if not amount or not category or not txdate:
+        return dbc.Alert("Completá monto, categoría y fecha.", color="warning"), amount, desc, no_update, flag,"","",False
+    is_rec = "yes" in (recurring or [])
+    has_rem= "yes" in (reminder  or [])
+    add_transaction(uid, ttype, float(amount), int(category), desc or "", txdate, is_rec, int(months or 0), has_rem)
+    new_data = _tx_rows(get_transactions(uid))
+    label = "Ingreso" if ttype=="income" else "Gasto"
+    msg   = f"Guardado: {label} de ${float(amount):,.2f}"
+    if is_rec and months: msg += f" + {months} meses programados"
+    if has_rem: msg += " · 🔔 recordatorio activado"
+    return dbc.Alert(msg, color="success", duration=3000), None, None, new_data, flag+1, msg, "✅ Guardado", True
+
+@app.callback(
+    Output("tx-table","data", allow_duplicate=True),
+    Input("tx-table","data_previous"), State("tx-table","data"),
+    prevent_initial_call=True,
+)
+def del_row(prev, curr):
+    if prev is None or curr is None: return no_update
+    if len(prev) > len(curr):
+        for tid in {r["ID"] for r in prev} - {r["ID"] for r in curr}:
+            delete_transaction(int(tid))
+    return curr
+
+
+# ──────────────────────────────────────────────
+# Callback — Reporte IA
+# ──────────────────────────────────────────────
+
+@app.callback(
+    Output("report-output","children"),
+    Input("btn-report","n_clicks"),
+    State("report-month","value"),
+    State("active-user-id","data"),
+    prevent_initial_call=True,
+)
+def gen_report(n, month, uid):
+    if not uid or not month: return dbc.Alert("Seleccioná un mes.", color="warning")
+    try:
+        from groq_utils import generate_report
+        data = get_monthly_detail(uid, month)
+        kpis = get_monthly_kpis(uid, month)
+
+        kpi_row = dbc.Row([
+            dbc.Col(kpi_card("Ingresos",      f"${data['income']:,.2f}",          month,                       C["income"],  "📥"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Gastos",         f"${data['expense']:,.2f}",         month,                       C["expense"], "📤"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Balance",        f"${data['balance']:,.2f}",         "Neto del mes",              C["primary"], "💰"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Tasa de Ahorro", f"{data['savings_rate']:.1f}%",     "vs anterior: " + (
+                f"{data['savings_rate']-data['prev_savings_rate']:+.1f}pp"), C["warning"], "💹"), md=3, sm=6, className="mb-3"),
+        ], className="mb-3")
+
+        report_text = generate_report(data)
+
+        return html.Div([
+            kpi_row,
+            dbc.Card([
+                dbc.CardHeader(html.H6(f"Reporte generado por IA — {month}",
+                                       style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+                dbc.CardBody(dcc.Markdown(report_text,
+                    style={"color":C["text"],"lineHeight":"1.7","fontSize":"0.95rem"})),
+            ], style=cs(C["primary"])),
+        ])
+    except ValueError as e:
+        return dbc.Alert(str(e), color="warning")
+    except Exception as e:
+        return dbc.Alert(f"Error al generar el reporte: {str(e)}", color="danger")
+
+
+# ──────────────────────────────────────────────
+# Callbacks de Voz — clientside
+# ──────────────────────────────────────────────
+
+app.clientside_callback(
+    """
+    function(n) {
+        if (!n) return window.dash_clientside.no_update;
+        var statusEl = document.getElementById('voice-status');
+        var startBtn = document.getElementById('btn-start-record');
+        var stopBtn  = document.getElementById('btn-stop-record');
+        navigator.mediaDevices.getUserMedia({audio: true})
+            .then(function(stream) {
+                window._audioStream = stream;
+                window._audioChunks = [];
+                var opts = MediaRecorder.isTypeSupported('audio/webm') ? {mimeType:'audio/webm'} : {};
+                window._mediaRecorder = new MediaRecorder(stream, opts);
+                window._mediaRecorder.ondataavailable = function(e) {
+                    if (e.data.size > 0) window._audioChunks.push(e.data);
+                };
+                window._mediaRecorder.start(100);
+                if (statusEl) statusEl.innerHTML = '<span style="color:#ff5c5c">&#9679; Grabando...</span>';
+                if (startBtn) startBtn.disabled = true;
+                if (stopBtn)  stopBtn.disabled  = false;
+            })
+            .catch(function(err) {
+                if (statusEl) statusEl.innerText = '❌ Error al acceder al micrófono: ' + err.message;
+            });
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("voice-start-dummy", "children"),
+    Input("btn-start-record", "n_clicks"),
+    prevent_initial_call=True,
+)
+
+app.clientside_callback(
+    """
+    function(n, uid) {
+        if (!n || !window._mediaRecorder) return window.dash_clientside.no_update;
+        var statusEl = document.getElementById('voice-status');
+        var startBtn = document.getElementById('btn-start-record');
+        var stopBtn  = document.getElementById('btn-stop-record');
+        window._mediaRecorder.onstop = function() {
+            var mime = window._mediaRecorder.mimeType || 'audio/webm';
+            var blob = new Blob(window._audioChunks, {type: mime});
+            if (window._audioStream)
+                window._audioStream.getTracks().forEach(function(t){ t.stop(); });
+            var fd = new FormData();
+            fd.append('audio', blob, 'recording.webm');
+            fd.append('user_id', String(uid));
+            if (statusEl) statusEl.innerHTML = '<span style="color:#ffb84d">&#9203; Procesando...</span>';
+            fetch('/process-audio', {method:'POST', body: fd})
+                .then(function(r){ return r.json(); })
+                .then(function(data){
+                    localStorage.setItem('_dashVoiceResult', JSON.stringify(data));
+                    if (statusEl) statusEl.innerHTML = '<span style="color:#00d4aa">&#10003; Completado</span>';
+                })
+                .catch(function(err){
+                    localStorage.setItem('_dashVoiceResult', JSON.stringify({error: String(err)}));
+                    if (statusEl) statusEl.innerHTML = '<span style="color:#ff5c5c">&#10007; Error</span>';
+                })
+                .finally(function(){
+                    if (startBtn) startBtn.disabled = false;
+                    if (stopBtn)  stopBtn.disabled  = true;
+                });
+        };
+        window._mediaRecorder.stop();
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("voice-stop-dummy",  "children"),
+    Input("btn-stop-record",    "n_clicks"),
+    State("active-user-id",     "data"),
+    prevent_initial_call=True,
+)
+
+app.clientside_callback(
+    """
+    function(n) {
+        var r = localStorage.getItem('_dashVoiceResult');
+        if (r) { localStorage.removeItem('_dashVoiceResult'); return JSON.parse(r); }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("voice-result-store", "data"),
+    Input("voice-poll-interval", "n_intervals"),
+)
+
+
+# ──────────────────────────────────────────────
+# Callback de Voz — poblar formulario
+# ──────────────────────────────────────────────
+
+@app.callback(
+    Output("voice-transcript-text", "children"),
+    Output("t-voice-type",          "value"),
+    Output("t-voice-amount",        "value"),
+    Output("t-voice-category",      "value"),
+    Output("t-voice-desc",          "value"),
+    Output("t-voice-date",          "value"),
+    Input("voice-result-store",     "data"),
+    prevent_initial_call=True,
+)
+def populate_voice_form(data):
+    fallback = ("—", "expense", 0, None, "", date.today().isoformat())
+    if not data: return fallback
+    if "error" in data:
+        return (f"❌ {data['error']}",) + fallback[1:]
+    tx = data.get("transaction", {})
+    return (
+        data.get("transcription", "—"),
+        tx.get("type", "expense"),
+        tx.get("amount", 0),
+        tx.get("category_id"),
+        tx.get("description", ""),
+        tx.get("date", date.today().isoformat()),
+    )
+
+
+# ──────────────────────────────────────────────
+# Callback de Voz — confirmar y guardar
+# ──────────────────────────────────────────────
+
+@app.callback(
+    Output("voice-confirm-feedback", "children"),
+    Output("saved-flag", "data",     allow_duplicate=True),
+    Input("btn-voice-confirm",       "n_clicks"),
+    State("t-voice-type",    "value"), State("t-voice-amount",   "value"),
+    State("t-voice-category","value"), State("t-voice-desc",     "value"),
+    State("t-voice-date",    "value"), State("active-user-id",   "data"),
+    State("saved-flag",      "data"),
+    prevent_initial_call=True,
+)
+def confirm_voice(n, ttype, amount, category, desc, txdate, uid, flag):
+    if not n or not uid: return no_update, no_update
+    if not all([amount, category, txdate]):
+        return dbc.Alert("Completá todos los campos.", color="warning"), no_update
+    try:
+        add_transaction(uid, ttype, float(amount), int(category), desc or "Voz", txdate)
+        label = "Ingreso" if ttype=="income" else "Gasto"
+        return dbc.Alert(f"✅ Guardado: {label} de ${float(amount):,.2f}", color="success", duration=3000), flag+1
+    except Exception as e:
+        return dbc.Alert(f"❌ Error: {e}", color="danger"), no_update
+
+
+# ──────────────────────────────────────────────
+# Flask route — procesar audio
+# ──────────────────────────────────────────────
+
+@app.server.route("/process-audio", methods=["POST"])
+def process_audio():
+    try:
+        from groq_utils import transcribe_audio, extract_transaction
+        audio_file = request.files.get("audio")
+        uid        = request.form.get("user_id", type=int)
+        if not audio_file or not uid:
+            return jsonify({"error": "Datos incompletos"}), 400
+
+        audio_bytes   = audio_file.read()
+        transcription = transcribe_audio(audio_bytes, "webm")
+        cats          = get_categories(uid)            # (id, name, type)
+        transaction   = extract_transaction(transcription, cats)
+
+        return jsonify({"transcription": transcription, "transaction": transaction})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Error al procesar audio: {str(e)}"}), 500
+
+
+# ──────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 8050))
+    app.run(host="0.0.0.0", port=port, debug=False)
