@@ -39,13 +39,17 @@ def init_db():
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id            SERIAL PRIMARY KEY,
-            username      TEXT NOT NULL UNIQUE,
-            password_hash TEXT,
-            created_at    TIMESTAMPTZ DEFAULT NOW()
+            id              SERIAL PRIMARY KEY,
+            username        TEXT NOT NULL UNIQUE,
+            password_hash   TEXT,
+            secret_question TEXT,
+            secret_answer   TEXT,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
         )
     """)
-    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash   TEXT")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS secret_question TEXT")
+    c.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS secret_answer   TEXT")
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS categories (
@@ -104,7 +108,17 @@ def _create_default_categories(conn, user_id: int):
         c.execute("INSERT INTO categories (user_id, name, type) VALUES (%s, %s, %s)",
                   (user_id, name, cat_type))
 
-def register_user(username: str, password: str) -> tuple:
+SECURITY_QUESTIONS = [
+    "¿Cuál es el nombre de tu primera mascota?",
+    "¿En qué ciudad naciste?",
+    "¿Cuál es el nombre de tu madre?",
+    "¿Cuál fue el nombre de tu escuela primaria?",
+    "¿Cuál es tu película favorita?",
+    "¿Cuál es el apellido de soltera de tu madre?",
+]
+
+def register_user(username: str, password: str,
+                  secret_question: str = None, secret_answer: str = None) -> tuple:
     """(user_id, None) o (None, error_str)"""
     conn = get_conn()
     c = conn.cursor()
@@ -112,8 +126,11 @@ def register_user(username: str, password: str) -> tuple:
     if c.fetchone():
         conn.close()
         return None, "El usuario ya existe."
-    c.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s) RETURNING id",
-              (username, _hash(password)))
+    answer_hash = _hash(secret_answer.strip().lower()) if secret_answer else None
+    c.execute(
+        "INSERT INTO users (username, password_hash, secret_question, secret_answer) "
+        "VALUES (%s, %s, %s, %s) RETURNING id",
+        (username, _hash(password), secret_question, answer_hash))
     user_id = c.fetchone()[0]
     _create_default_categories(conn, user_id)
     conn.commit()
@@ -130,11 +147,48 @@ def login_user(username: str, password: str) -> tuple:
     if not row:
         return None, "Usuario no encontrado."
     user_id, pwd_hash = row
-    if pwd_hash is None:          # usuario legacy sin contraseña
+    if pwd_hash is None:
         return user_id, None
     if not _verify(password, pwd_hash):
         return None, "Contraseña incorrecta."
     return user_id, None
+
+def get_secret_question(username: str) -> tuple:
+    """(question, None) o (None, error_str)"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT secret_question FROM users WHERE username = %s", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None, "Usuario no encontrado."
+    if not row[0]:
+        return None, "Este usuario no tiene pregunta de seguridad configurada."
+    return row[0], None
+
+def verify_secret_answer(username: str, answer: str) -> tuple:
+    """(user_id, None) o (None, error_str)"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT id, secret_answer FROM users WHERE username = %s", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None, "Usuario no encontrado."
+    user_id, answer_hash = row
+    if not answer_hash:
+        return None, "Sin pregunta de seguridad configurada."
+    if not _verify(answer.strip().lower(), answer_hash):
+        return None, "Respuesta incorrecta."
+    return user_id, None
+
+def reset_password(username: str, new_password: str) -> None:
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE users SET password_hash = %s WHERE username = %s",
+              (_hash(new_password), username))
+    conn.commit()
+    conn.close()
 
 def get_all_users() -> list:
     conn = get_conn()

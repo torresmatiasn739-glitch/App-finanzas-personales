@@ -21,6 +21,8 @@ from flask import request, jsonify
 
 from database import (
     init_db, register_user, login_user,
+    get_secret_question, verify_secret_answer, reset_password,
+    SECURITY_QUESTIONS,
     get_categories, add_transaction, delete_transaction,
     get_transactions, get_monthly_summary, get_expenses_by_category,
     get_monthly_detail,
@@ -41,6 +43,7 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.CYBORG],
     suppress_callback_exceptions=True,
     title="Finanzas Personales",
+    meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1.0"}],
 )
 
 # ──────────────────────────────────────────────
@@ -69,12 +72,15 @@ def kpi_card(title, value, subtitle, color, icon):
 
 def cl(title, extra=None):
     base = dict(
-        title=dict(text=title, font=dict(color=C["text"], size=14)),
+        title=dict(text=title, font=dict(color=C["text"], size=13)),
         paper_bgcolor=PAPER_BG, plot_bgcolor=PLOT_BG,
-        font=dict(color=C["text"], size=12),
-        xaxis=dict(gridcolor=GRID_COL), yaxis=dict(gridcolor=GRID_COL),
-        legend=dict(bgcolor="rgba(0,0,0,0)"),
-        margin=dict(t=50, b=40, l=40, r=20), height=340,
+        font=dict(color=C["text"], size=11),
+        xaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=10)),
+        yaxis=dict(gridcolor=GRID_COL, tickfont=dict(size=10)),
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h",
+                    yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(t=50, b=30, l=30, r=10), height=320,
+        autosize=True,
     )
     if extra: base.update(extra)
     return base
@@ -84,40 +90,72 @@ def cl(title, extra=None):
 # Layout principal
 # ──────────────────────────────────────────────
 
+def auth_panel():
+    """Panel de autenticación con tabs: Ingresar / Registrarse / Recuperar contraseña."""
+    CARD = {**cs(C["primary"]), "maxWidth": "480px", "margin": "60px auto 0"}
+
+    login_tab = dbc.Tab(label="🔑  Ingresar", tab_id="auth-login", children=dbc.CardBody([
+        dbc.Label("Usuario", style={"color": C["muted"]}),
+        dbc.Input(id="inp-user", placeholder="Tu nombre de usuario", type="text", className="mb-2"),
+        dbc.Label("Contraseña", style={"color": C["muted"]}),
+        dbc.Input(id="inp-pass", placeholder="Tu contraseña", type="password", className="mb-3"),
+        dbc.Button("Ingresar", id="btn-login", color="success", n_clicks=0, className="w-100"),
+        html.Div(id="login-feedback", className="mt-3"),
+    ]))
+
+    register_tab = dbc.Tab(label="✏️  Registrarse", tab_id="auth-register", children=dbc.CardBody([
+        dbc.Label("Usuario", style={"color": C["muted"]}),
+        dbc.Input(id="inp-reg-user", placeholder="Elegí un nombre de usuario", type="text", className="mb-2"),
+        dbc.Label("Contraseña", style={"color": C["muted"]}),
+        dbc.Input(id="inp-reg-pass", placeholder="Contraseña (mín. 6 caracteres)", type="password", className="mb-2"),
+        dbc.Label("Repetir contraseña", style={"color": C["muted"]}),
+        dbc.Input(id="inp-reg-pass2", placeholder="Repetí la contraseña", type="password", className="mb-3"),
+        dbc.Label("Pregunta de seguridad", style={"color": C["muted"]}),
+        dcc.Dropdown(id="inp-reg-question",
+            options=[{"label": q, "value": q} for q in SECURITY_QUESTIONS],
+            placeholder="Seleccioná una pregunta...",
+            style={"color": "#000"}, className="mb-2"),
+        dbc.Label("Respuesta", style={"color": C["muted"]}),
+        dbc.Input(id="inp-reg-answer", placeholder="Tu respuesta (no distingue mayúsculas)", type="text", className="mb-3"),
+        dbc.Button("Crear cuenta", id="btn-register", color="primary", n_clicks=0, className="w-100"),
+        html.Div(id="register-feedback", className="mt-3"),
+    ]))
+
+    recover_tab = dbc.Tab(label="🔓  Recuperar contraseña", tab_id="auth-recover", children=dbc.CardBody([
+        html.P("Ingresá tu usuario para ver tu pregunta de seguridad.",
+               style={"color": C["muted"], "fontSize": "0.88rem"}),
+        dbc.Label("Usuario", style={"color": C["muted"]}),
+        dbc.Input(id="inp-rec-user", placeholder="Tu nombre de usuario", type="text", className="mb-2"),
+        dbc.Button("Buscar pregunta", id="btn-rec-find", color="secondary", n_clicks=0, className="mb-3"),
+        html.Div(id="rec-question-area"),
+    ]))
+
+    return html.Div([
+        html.Div([
+            html.H2("💰 Finanzas Personales",
+                    style={"color": C["primary"], "fontWeight": "800", "textAlign": "center", "margin": "0"}),
+            html.P("Gestión inteligente de tu dinero",
+                   style={"color": C["muted"], "textAlign": "center", "marginBottom": "24px"}),
+        ], style={"paddingTop": "40px"}),
+        dbc.Card(
+            dbc.Tabs([login_tab, register_tab, recover_tab],
+                     id="auth-tabs", active_tab="auth-login"),
+            style=CARD),
+    ])
+
+
 app.layout = dbc.Container([
-    # Header
-    dbc.Row(dbc.Col(html.Div([
-        html.H2("💰 Finanzas Personales", style={"color": C["primary"], "fontWeight": "800", "margin": "0"}),
-        html.P("Gestión inteligente de tu dinero", style={"color": C["muted"], "margin": "0"}),
-    ], style={"padding": "22px 0 14px"}))),
-
-    # Login
-    dbc.Row([
-        dbc.Col([
-            dbc.Label("Usuario", style={"color": C["muted"], "marginBottom": "4px"}),
-            dbc.Input(id="inp-user", placeholder="Nombre de usuario...", type="text", className="mb-2"),
-            dbc.Label("Contraseña", style={"color": C["muted"], "marginBottom": "4px"}),
-            dbc.Input(id="inp-pass", placeholder="Contraseña...", type="password", className="mb-2"),
-            dbc.Button("Ingresar / Registrarse", id="btn-login", color="success", n_clicks=0),
-            html.Small(" Si sos nuevo usuario, se creará tu cuenta automáticamente.",
-                       style={"color": C["muted"], "marginLeft": "10px"}),
-        ], md=5),
-        dbc.Col(html.Div(id="user-info",
-                style={"color": C["primary"], "paddingTop": "36px", "fontWeight": "600"}), md=7),
-    ], className="mb-4",
-       style={"backgroundColor": C["bg_card"], "padding": "18px",
-              "borderRadius": "12px", "border": f"1px solid {C['border']}"}),
-
     # Stores y helpers siempre presentes
-    dcc.Store(id="active-user-id",    data=None),
-    dcc.Store(id="saved-flag",        data=0),
-    dcc.Store(id="voice-result-store",data=None),
+    dcc.Store(id="active-user-id",     data=None),
+    dcc.Store(id="saved-flag",         data=0),
+    dcc.Store(id="voice-result-store", data=None),
+    dcc.Store(id="rec-verified-user",  data=None),
     dcc.Interval(id="voice-poll-interval", interval=500, n_intervals=0),
-    html.Div(id="voice-start-dummy",  style={"display": "none"}),
-    html.Div(id="voice-stop-dummy",   style={"display": "none"}),
+    html.Div(id="voice-start-dummy", style={"display": "none"}),
+    html.Div(id="voice-stop-dummy",  style={"display": "none"}),
 
-    # Contenido principal
-    html.Div(id="main-content"),
+    # Contenido principal (auth o app)
+    html.Div(id="main-content", children=auth_panel()),
 
     # Toast
     dbc.Toast(id="toast-msg", header="", is_open=False, duration=3500,
@@ -126,38 +164,17 @@ app.layout = dbc.Container([
 
 
 # ──────────────────────────────────────────────
-# Login callback
+# Auth callbacks
 # ──────────────────────────────────────────────
 
-@app.callback(
-    Output("active-user-id", "data"),
-    Output("user-info",      "children"),
-    Output("main-content",   "children"),
-    Input("btn-login",       "n_clicks"),
-    State("inp-user",  "value"),
-    State("inp-pass",  "value"),
-    prevent_initial_call=True,
-)
-def login(n, username, password):
-    if not username or not username.strip():
-        return no_update, dbc.Alert("Ingresá un nombre de usuario.", color="warning"), no_update
-    if not password:
-        return no_update, dbc.Alert("Ingresá una contraseña.", color="warning"), no_update
-
-    username = username.strip()
-
-    # Intentar login; si no existe, registrar
-    user_id, err = login_user(username, password)
-    if user_id is None:
-        if err == "Usuario no encontrado.":
-            user_id, reg_err = register_user(username, password)
-            if reg_err:
-                return no_update, dbc.Alert(reg_err, color="danger"), no_update
-            info_msg = f"✅ Cuenta creada: {username}  (ID #{user_id})"
-        else:
-            return no_update, dbc.Alert(err, color="danger"), no_update
-    else:
-        info_msg = f"✅ Sesión activa: {username}  (ID #{user_id})"
+def _build_app_layout(username, user_id):
+    header = html.Div([
+        html.H2("💰 Finanzas Personales",
+                style={"color": C["primary"], "fontWeight": "800", "margin": "0", "display": "inline"}),
+        dbc.Button("Cerrar sesión", id="btn-logout", color="outline-secondary", size="sm",
+                   n_clicks=0, style={"float": "right", "marginTop": "4px"}),
+        html.P(f"Bienvenido, {username}", style={"color": C["muted"], "margin": "0"}),
+    ], style={"padding": "18px 0 10px", "borderBottom": f"1px solid {C['border']}", "marginBottom": "16px"})
 
     tabs = dbc.Tabs([
         dbc.Tab(label="📊  Dashboard",       tab_id="dashboard"),
@@ -169,7 +186,121 @@ def login(n, username, password):
         dbc.Tab(label="🎙️  Voz",            tab_id="voice"),
     ], id="main-tabs", active_tab="dashboard", className="mb-4")
 
-    return user_id, info_msg, html.Div([tabs, html.Div(id="tab-content")])
+    return html.Div([header, tabs, html.Div(id="tab-content")])
+
+
+# — Login —
+@app.callback(
+    Output("active-user-id", "data"),
+    Output("main-content",   "children"),
+    Output("login-feedback", "children"),
+    Input("btn-login",       "n_clicks"),
+    State("inp-user", "value"),
+    State("inp-pass", "value"),
+    prevent_initial_call=True,
+)
+def cb_login(n, username, password):
+    if not username or not username.strip():
+        return no_update, no_update, dbc.Alert("Ingresá un nombre de usuario.", color="warning")
+    if not password:
+        return no_update, no_update, dbc.Alert("Ingresá una contraseña.", color="warning")
+    username = username.strip()
+    user_id, err = login_user(username, password)
+    if user_id is None:
+        return no_update, no_update, dbc.Alert(err, color="danger")
+    return user_id, _build_app_layout(username, user_id), no_update
+
+
+# — Registro —
+@app.callback(
+    Output("active-user-id",    "data",     allow_duplicate=True),
+    Output("main-content",      "children", allow_duplicate=True),
+    Output("register-feedback", "children"),
+    Input("btn-register", "n_clicks"),
+    State("inp-reg-user",     "value"),
+    State("inp-reg-pass",     "value"),
+    State("inp-reg-pass2",    "value"),
+    State("inp-reg-question", "value"),
+    State("inp-reg-answer",   "value"),
+    prevent_initial_call=True,
+)
+def cb_register(n, username, password, password2, question, answer):
+    if not all([username, password, password2, question, answer]):
+        return no_update, no_update, dbc.Alert("Completá todos los campos.", color="warning")
+    username = username.strip()
+    if len(password) < 6:
+        return no_update, no_update, dbc.Alert("La contraseña debe tener al menos 6 caracteres.", color="warning")
+    if password != password2:
+        return no_update, no_update, dbc.Alert("Las contraseñas no coinciden.", color="danger")
+    user_id, err = register_user(username, password, question, answer.strip())
+    if err:
+        return no_update, no_update, dbc.Alert(err, color="danger")
+    return user_id, _build_app_layout(username, user_id), no_update
+
+
+# — Cerrar sesión —
+@app.callback(
+    Output("active-user-id", "data",     allow_duplicate=True),
+    Output("main-content",   "children", allow_duplicate=True),
+    Input("btn-logout",      "n_clicks"),
+    prevent_initial_call=True,
+)
+def cb_logout(n):
+    if not n: return no_update, no_update
+    return None, auth_panel()
+
+
+# — Recupero: buscar pregunta —
+@app.callback(
+    Output("rec-question-area", "children"),
+    Output("rec-verified-user", "data"),
+    Input("btn-rec-find", "n_clicks"),
+    State("inp-rec-user", "value"),
+    prevent_initial_call=True,
+)
+def cb_rec_find(n, username):
+    if not username or not username.strip():
+        return dbc.Alert("Ingresá tu usuario.", color="warning"), no_update
+    question, err = get_secret_question(username.strip())
+    if err:
+        return dbc.Alert(err, color="danger"), no_update
+    form = html.Div([
+        dbc.Alert([html.Strong("Pregunta: "), question], color="info", className="mb-3"),
+        dbc.Label("Tu respuesta", style={"color": C["muted"]}),
+        dbc.Input(id="inp-rec-answer", placeholder="Respondé la pregunta...", type="text", className="mb-2"),
+        dbc.Label("Nueva contraseña", style={"color": C["muted"]}),
+        dbc.Input(id="inp-rec-newpass", placeholder="Nueva contraseña (mín. 6 caracteres)", type="password", className="mb-2"),
+        dbc.Label("Repetir nueva contraseña", style={"color": C["muted"]}),
+        dbc.Input(id="inp-rec-newpass2", placeholder="Repetí la nueva contraseña", type="password", className="mb-3"),
+        dbc.Button("Cambiar contraseña", id="btn-rec-reset", color="warning", n_clicks=0),
+        html.Div(id="rec-reset-feedback", className="mt-3"),
+    ])
+    return form, username.strip()
+
+
+# — Recupero: resetear contraseña —
+@app.callback(
+    Output("rec-reset-feedback", "children"),
+    Input("btn-rec-reset", "n_clicks"),
+    State("rec-verified-user", "data"),
+    State("inp-rec-answer",   "value"),
+    State("inp-rec-newpass",  "value"),
+    State("inp-rec-newpass2", "value"),
+    prevent_initial_call=True,
+)
+def cb_rec_reset(n, username, answer, newpass, newpass2):
+    if not all([username, answer, newpass, newpass2]):
+        return dbc.Alert("Completá todos los campos.", color="warning")
+    if len(newpass) < 6:
+        return dbc.Alert("La contraseña debe tener al menos 6 caracteres.", color="warning")
+    if newpass != newpass2:
+        return dbc.Alert("Las contraseñas no coinciden.", color="danger")
+    _, err = verify_secret_answer(username, answer)
+    if err:
+        return dbc.Alert(err, color="danger")
+    reset_password(username, newpass)
+    return dbc.Alert("✅ Contraseña cambiada exitosamente. Ingresá con tu nueva contraseña.",
+                     color="success")
 
 
 # ──────────────────────────────────────────────
@@ -261,10 +392,10 @@ def build_dashboard(uid):
     return html.Div([
         kpi_row,
         dbc.Row([
-            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config={"displayModeBar":False})), style=cs()), md=7, className="mb-3"),
-            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config={"displayModeBar":False})), style=cs()), md=5, className="mb-3"),
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs()), md=7, className="mb-3"),
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs()), md=5, className="mb-3"),
         ]),
-        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config={"displayModeBar":False})), style=cs(), className="mb-3"),
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs(), className="mb-3"),
         dbc.Card([
             dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
             dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
@@ -362,7 +493,7 @@ def build_cashflow(uid):
              "Neto":f"${p['net']:,.2f}","Balance":f"${p['balance']:,.2f}",
              "Estado":"🔮 Proyectado" if p["is_future"] else "✅ Real"} for p in proj]
     return html.Div([
-        dbc.Card(dbc.CardBody(dcc.Graph(figure=fig, config={"displayModeBar":False})), style=cs(), className="mb-4"),
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fig, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs(), className="mb-4"),
         dbc.Card([
             dbc.CardHeader(html.H6("Detalle mensual", style={"color":C["primary"],"margin":"0"})),
             dbc.CardBody(dash_table.DataTable(data=rows,
@@ -829,6 +960,4 @@ def process_audio():
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8050))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(debug=True, port=8050)
