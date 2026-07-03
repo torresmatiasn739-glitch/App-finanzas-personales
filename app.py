@@ -38,6 +38,15 @@ from analytics import (
 
 init_db()
 
+def is_mobile() -> bool:
+    """Detecta si el request viene de un dispositivo móvil via User-Agent."""
+    try:
+        from flask import request as flask_request
+        ua = flask_request.headers.get("User-Agent", "").lower()
+        return any(k in ua for k in ["android","iphone","ipad","mobile","phone"])
+    except Exception:
+        return False
+
 app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.CYBORG],
@@ -319,9 +328,10 @@ def render_tab(tab, _, uid):
     trigger = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
     if trigger == "saved-flag" and tab in ["report", "voice"]:
         return no_update
-    if tab == "dashboard":    return build_dashboard(uid)
+    mobile = is_mobile()
+    if tab == "dashboard":    return build_dashboard(uid, mobile)
     if tab == "transactions": return build_transactions(uid)
-    if tab == "cashflow":     return build_cashflow(uid)
+    if tab == "cashflow":     return build_cashflow(uid, mobile)
     if tab == "alerts":       return build_alerts(uid)
     if tab == "investments":  return build_investments(uid)
     if tab == "report":       return build_report(uid)
@@ -333,7 +343,7 @@ def render_tab(tab, _, uid):
 # TAB 1 — Dashboard
 # ══════════════════════════════════════════════
 
-def build_dashboard(uid):
+def build_dashboard(uid, mobile=False):
     ym   = datetime.now().strftime("%Y-%m")
     kpis = get_monthly_kpis(uid, ym)
     bal  = get_current_balance(uid)
@@ -345,22 +355,55 @@ def build_dashboard(uid):
         dbc.Col(kpi_card("Tasa de Ahorro",   f"{kpis['savings_rate']:.1f}%","Del ingreso",      C["warning"], "💹"), md=3, sm=6, className="mb-3"),
     ], className="mb-2")
 
+    graph_cfg = {"displayModeBar": False, "scrollZoom": False,
+                 "doubleClick": False, "dragmode": False}
+
     mdf = get_monthly_summary(uid)
     fb  = go.Figure()
     if not mdf.empty:
-        fb.add_trace(go.Bar(name="Ingresos", x=mdf[mdf.type=="income"]["month"],  y=mdf[mdf.type=="income"]["total"],  marker_color=C["income"],  opacity=0.85, marker_line_width=0))
-        fb.add_trace(go.Bar(name="Gastos",   x=mdf[mdf.type=="expense"]["month"], y=mdf[mdf.type=="expense"]["total"], marker_color=C["expense"], opacity=0.85, marker_line_width=0))
-    fb.update_layout(**cl("Ingresos vs Gastos por Mes", {"barmode": "group"}))
+        # Mobile: solo últimos 4 meses; Desktop: todos
+        if mobile:
+            months_to_show = sorted(mdf["month"].unique())[-4:]
+            mdf_f = mdf[mdf["month"].isin(months_to_show)]
+        else:
+            mdf_f = mdf
+        fb.add_trace(go.Bar(name="Ingresos", x=mdf_f[mdf_f.type=="income"]["month"],  y=mdf_f[mdf_f.type=="income"]["total"],  marker_color=C["income"],  opacity=0.85, marker_line_width=0))
+        fb.add_trace(go.Bar(name="Gastos",   x=mdf_f[mdf_f.type=="expense"]["month"], y=mdf_f[mdf_f.type=="expense"]["total"], marker_color=C["expense"], opacity=0.85, marker_line_width=0))
+
+    if mobile:
+        fb.update_layout(**cl("Ing. vs Gastos", {
+            "barmode": "group", "height": 280,
+            "margin": dict(t=40, b=50, l=30, r=10),
+            "font": dict(size=10),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
+            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL),
+            "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
+        }))
+    else:
+        fb.update_layout(**cl("Ingresos vs Gastos por Mes", {"barmode": "group"}))
 
     today = datetime.now()
     cdf   = get_expenses_by_category(uid, today.replace(day=1).strftime("%Y-%m-%d"), today.strftime("%Y-%m-%d"))
     if not cdf.empty:
         fp = px.pie(cdf, values="total", names="category", hole=0.42,
                     color_discrete_sequence=px.colors.qualitative.Pastel)
-        fp.update_traces(textposition="inside", textinfo="percent+label")
-        fp.update_layout(**cl(f"Gastos por Rubro ({ym})"))
+        if mobile:
+            fp.update_traces(textposition="outside", textinfo="percent",
+                             textfont_size=10,
+                             pull=[0.05]*len(cdf))
+            fp.update_layout(**cl(f"Rubros ({ym})", {
+                "height": 320,
+                "margin": dict(t=40, b=60, l=10, r=10),
+                "legend": dict(orientation="h", y=-0.2, x=0.5,
+                               xanchor="center", font=dict(size=9)),
+                "showlegend": True,
+            }))
+        else:
+            fp.update_traces(textposition="inside", textinfo="percent+label")
+            fp.update_layout(**cl(f"Gastos por Rubro ({ym})"))
     else:
-        fp = go.Figure(); fp.update_layout(**cl(f"Gastos por Rubro ({ym}) — Sin datos"))
+        fp = go.Figure()
+        fp.update_layout(**cl(f"Gastos por Rubro ({ym}) — Sin datos"))
 
     proj = get_cash_flow_projection(uid, 3, 4)
     pf   = pd.DataFrame(proj)
@@ -373,29 +416,63 @@ def build_dashboard(uid):
             fl.add_trace(go.Scatter(x=pd.concat([past.tail(1), fut]).month,
                 y=pd.concat([past.tail(1), fut]).balance, name="Proyectado",
                 line=dict(color=C["warning"], width=2, dash="dot")))
-    fl.update_layout(**cl("Evolución del Balance", {"height": 300}))
+    if mobile:
+        fl.update_layout(**cl("Balance", {
+            "height": 250,
+            "margin": dict(t=40, b=40, l=30, r=10),
+            "font": dict(size=10),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
+            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL),
+            "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
+        }))
+    else:
+        fl.update_layout(**cl("Evolución del Balance", {"height": 300}))
 
     txs = get_transactions(uid)[:8]
+    # Mobile: tabla simplificada con menos columnas
+    if mobile:
+        tbl_data    = [{"Tipo": "▲" if t[1]=="income" else "▼",
+                        "Monto": f"${t[2]:,.0f}", "Cat.": t[3] or "—", "Fecha": t[5][-5:]} for t in txs]
+        tbl_columns = [{"name": n, "id": n} for n in ["Tipo","Monto","Cat.","Fecha"]]
+        cell_style  = {"backgroundColor":C["bg_card"],"color":C["text"],"padding":"6px 8px",
+                       "border":f"1px solid {C['border']}","fontSize":"0.82rem"}
+    else:
+        tbl_data    = [{"Tipo": "▲ Ingreso" if t[1]=="income" else "▼ Gasto", "Monto": f"${t[2]:,.2f}",
+                        "Categoría": t[3] or "—", "Descripción": t[4] or "—", "Fecha": t[5]} for t in txs]
+        tbl_columns = [{"name": n, "id": n} for n in ["Tipo","Monto","Categoría","Descripción","Fecha"]]
+        cell_style  = {"backgroundColor":C["bg_card"],"color":C["text"],"padding":"9px 12px",
+                       "border":f"1px solid {C['border']}","fontSize":"0.88rem"}
+
     tbl = dash_table.DataTable(
-        data=[{"Tipo": "▲ Ingreso" if t[1]=="income" else "▼ Gasto", "Monto": f"${t[2]:,.2f}",
-               "Categoría": t[3] or "—", "Descripción": t[4] or "—", "Fecha": t[5]} for t in txs],
-        columns=[{"name": n, "id": n} for n in ["Tipo","Monto","Categoría","Descripción","Fecha"]],
+        data=tbl_data, columns=tbl_columns,
         style_table={"overflowX":"auto"},
-        style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"padding":"9px 12px","border":f"1px solid {C['border']}","fontSize":"0.88rem"},
+        style_cell=cell_style,
         style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
         style_data_conditional=[
-            {"if":{"filter_query":'{Tipo} contains "Ingreso"'},"color":C["income"]},
-            {"if":{"filter_query":'{Tipo} contains "Gasto"'},"color":C["expense"]},
+            {"if":{"filter_query":'{Tipo} contains "▲"'},"color":C["income"]},
+            {"if":{"filter_query":'{Tipo} contains "▼"'},"color":C["expense"]},
         ],
     )
+
+    if mobile:
+        return html.Div([
+            kpi_row,
+            dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+            dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+            dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+            dbc.Card([
+                dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
+                dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
+            ], style=cs()),
+        ])
 
     return html.Div([
         kpi_row,
         dbc.Row([
-            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs()), md=7, className="mb-3"),
-            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs()), md=5, className="mb-3"),
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config=graph_cfg, responsive=True)), style=cs()), md=7, className="mb-3"),
+            dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs()), md=5, className="mb-3"),
         ]),
-        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs(), className="mb-3"),
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
         dbc.Card([
             dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
             dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
@@ -470,40 +547,75 @@ def _tx_rows(txs):
 # TAB 3 — Flujo de Fondos
 # ══════════════════════════════════════════════
 
-def build_cashflow(uid):
-    proj = get_cash_flow_projection(uid, 2, 6)
+def build_cashflow(uid, mobile=False):
+    # Mobile: menos meses para mayor claridad
+    back, ahead = (1, 3) if mobile else (2, 6)
+    proj = get_cash_flow_projection(uid, back, ahead)
     pf   = pd.DataFrame(proj)
     fig  = go.Figure()
+    graph_cfg = {"displayModeBar": False, "scrollZoom": False,
+                 "doubleClick": False, "dragmode": False}
+
     if not pf.empty:
         past = pf[~pf.is_future]; fut = pf[pf.is_future]
-        fig.add_trace(go.Bar(x=pf.month, y=pf.income,              name="Ingresos",  marker_color=C["income"],  opacity=0.75, marker_line_width=0, yaxis="y"))
-        fig.add_trace(go.Bar(x=pf.month, y=[-e for e in pf.expense],name="Gastos (−)",marker_color=C["expense"], opacity=0.75, marker_line_width=0, yaxis="y"))
+        fig.add_trace(go.Bar(x=pf.month, y=pf.income,               name="Ingresos",   marker_color=C["income"],  opacity=0.75, marker_line_width=0, yaxis="y"))
+        fig.add_trace(go.Bar(x=pf.month, y=[-e for e in pf.expense], name="Gastos (−)", marker_color=C["expense"], opacity=0.75, marker_line_width=0, yaxis="y"))
         fig.add_trace(go.Scatter(x=past.month, y=past.balance, name="Balance real", yaxis="y2", line=dict(color=C["primary"],width=2.5)))
         if not fut.empty:
             join = pd.concat([past.tail(1), fut])
             fig.add_trace(go.Scatter(x=join.month, y=join.balance, name="Proyectado", yaxis="y2", line=dict(color=C["warning"],width=2,dash="dot")))
-            fig.add_vrect(x0=fut.iloc[0].month, x1=pf.iloc[-1].month, fillcolor="rgba(255,184,77,0.05)",
-                          line_width=0, annotation_text="▶ Proyectado", annotation_position="top left",
-                          annotation_font_color=C["warning"])
-    fig.update_layout(**cl("Flujo de Fondos", {"barmode":"relative","height":420,
-        "yaxis":dict(title="Ingresos / Gastos",gridcolor=GRID_COL),
-        "yaxis2":dict(title="Balance",overlaying="y",side="right",showgrid=False)}))
+            if not mobile:
+                fig.add_vrect(x0=fut.iloc[0].month, x1=pf.iloc[-1].month,
+                              fillcolor="rgba(255,184,77,0.05)", line_width=0,
+                              annotation_text="▶ Proyectado", annotation_position="top left",
+                              annotation_font_color=C["warning"])
 
-    rows = [{"Mes":p["month"],"Ingresos":f"${p['income']:,.2f}","Gastos":f"${p['expense']:,.2f}",
-             "Neto":f"${p['net']:,.2f}","Balance":f"${p['balance']:,.2f}",
-             "Estado":"🔮 Proyectado" if p["is_future"] else "✅ Real"} for p in proj]
+    if mobile:
+        fig.update_layout(**cl("Flujo de Fondos", {
+            "barmode": "relative", "height": 300,
+            "margin": dict(t=40, b=50, l=30, r=10),
+            "font": dict(size=10),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
+            "yaxis": dict(title="", tickfont=dict(size=9), gridcolor=GRID_COL),
+            "yaxis2": dict(title="", overlaying="y", side="right", showgrid=False, tickfont=dict(size=9)),
+            "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=9)),
+        }))
+    else:
+        fig.update_layout(**cl("Flujo de Fondos", {
+            "barmode": "relative", "height": 420,
+            "yaxis":  dict(title="Ingresos / Gastos", gridcolor=GRID_COL),
+            "yaxis2": dict(title="Balance", overlaying="y", side="right", showgrid=False),
+        }))
+
+    # Tabla: en mobile mostrar columnas reducidas
+    if mobile:
+        rows = [{"Mes": p["month"], "Ing.": f"${p['income']:,.0f}",
+                 "Gas.": f"${p['expense']:,.0f}", "Balance": f"${p['balance']:,.0f}",
+                 "Estado": "🔮" if p["is_future"] else "✅"} for p in proj]
+        tbl_cols = [{"name": n, "id": n} for n in ["Mes","Ing.","Gas.","Balance","Estado"]]
+        cell_pad = "6px"
+        cell_fs  = "0.80rem"
+    else:
+        rows = [{"Mes": p["month"], "Ingresos": f"${p['income']:,.2f}", "Gastos": f"${p['expense']:,.2f}",
+                 "Neto": f"${p['net']:,.2f}", "Balance": f"${p['balance']:,.2f}",
+                 "Estado": "🔮 Proyectado" if p["is_future"] else "✅ Real"} for p in proj]
+        tbl_cols = [{"name": n, "id": n} for n in ["Mes","Ingresos","Gastos","Neto","Balance","Estado"]]
+        cell_pad = "9px"
+        cell_fs  = "inherit"
+
     return html.Div([
-        dbc.Card(dbc.CardBody(dcc.Graph(figure=fig, config={"displayModeBar":False,"scrollZoom":False,"doubleClick":False}, responsive=True)), style=cs(), className="mb-4"),
+        dbc.Card(dbc.CardBody(dcc.Graph(figure=fig, config=graph_cfg, responsive=True)), style=cs(), className="mb-4"),
         dbc.Card([
             dbc.CardHeader(html.H6("Detalle mensual", style={"color":C["primary"],"margin":"0"})),
-            dbc.CardBody(dash_table.DataTable(data=rows,
-                columns=[{"name":n,"id":n} for n in ["Mes","Ingresos","Gastos","Neto","Balance","Estado"]],
+            dbc.CardBody(dash_table.DataTable(data=rows, columns=tbl_cols,
                 style_table={"overflowX":"auto"},
-                style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"textAlign":"center","padding":"9px","border":f"1px solid {C['border']}"},
+                style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"textAlign":"center",
+                             "padding":cell_pad,"border":f"1px solid {C['border']}","fontSize":cell_fs},
                 style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
                 style_data_conditional=[
                     {"if":{"filter_query":'{Estado} contains "Proyectado"'},"backgroundColor":"#1a1f15"},
-                    {"if":{"filter_query":'{Neto} contains "-"'},"color":C["expense"]},
+                    {"if":{"filter_query":'{Estado} = "🔮"'},               "backgroundColor":"#1a1f15"},
+                    {"if":{"filter_query":'{Neto} contains "-"'},           "color":C["expense"]},
                 ])),
         ], style=cs()),
     ])
