@@ -362,18 +362,15 @@ def build_dashboard(uid, mobile=False):
     fb  = go.Figure()
     if not mdf.empty:
         if mobile:
-            # Mostrar: mes anterior, mes actual, 2 meses siguientes
-            from datetime import datetime
-            today = datetime.now()
-            prev_m  = (today.month - 1) or 12
-            prev_y  = today.year if today.month > 1 else today.year - 1
+            _now = datetime.now()
             window = []
             for delta in [-1, 0, 1, 2]:
-                m = today.month + delta; y = today.year
-                while m > 12: m -= 12; y += 1
-                while m < 1:  m += 12; y -= 1
-                window.append(f"{y}-{m:02d}")
-            mdf_f = mdf[mdf["month"].isin(window)]
+                _m = _now.month + delta
+                _y = _now.year
+                while _m > 12: _m -= 12; _y += 1
+                while _m < 1:  _m += 12; _y -= 1
+                window.append(f"{_y}-{_m:02d}")
+            mdf_f = mdf[mdf["month"].isin(window)] if not mdf.empty else mdf
         else:
             mdf_f = mdf
         fb.add_trace(go.Bar(name="Ingresos", x=mdf_f[mdf_f.type=="income"]["month"],  y=mdf_f[mdf_f.type=="income"]["total"],  marker_color=C["income"],  opacity=0.85, marker_line_width=0))
