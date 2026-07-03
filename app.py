@@ -361,10 +361,19 @@ def build_dashboard(uid, mobile=False):
     mdf = get_monthly_summary(uid)
     fb  = go.Figure()
     if not mdf.empty:
-        # Mobile: solo últimos 4 meses; Desktop: todos
         if mobile:
-            months_to_show = sorted(mdf["month"].unique())[-4:]
-            mdf_f = mdf[mdf["month"].isin(months_to_show)]
+            # Mostrar: mes anterior, mes actual, 2 meses siguientes
+            from datetime import datetime
+            today = datetime.now()
+            prev_m  = (today.month - 1) or 12
+            prev_y  = today.year if today.month > 1 else today.year - 1
+            window = []
+            for delta in [-1, 0, 1, 2]:
+                m = today.month + delta; y = today.year
+                while m > 12: m -= 12; y += 1
+                while m < 1:  m += 12; y -= 1
+                window.append(f"{y}-{m:02d}")
+            mdf_f = mdf[mdf["month"].isin(window)]
         else:
             mdf_f = mdf
         fb.add_trace(go.Bar(name="Ingresos", x=mdf_f[mdf_f.type=="income"]["month"],  y=mdf_f[mdf_f.type=="income"]["total"],  marker_color=C["income"],  opacity=0.85, marker_line_width=0))
@@ -373,6 +382,7 @@ def build_dashboard(uid, mobile=False):
     if mobile:
         fb.update_layout(**cl("Ing. vs Gastos", {
             "barmode": "group", "height": 280,
+            "dragmode": False,
             "margin": dict(t=40, b=50, l=30, r=10),
             "font": dict(size=10),
             "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
@@ -419,10 +429,11 @@ def build_dashboard(uid, mobile=False):
     if mobile:
         fl.update_layout(**cl("Balance", {
             "height": 250,
+            "dragmode": False,
             "margin": dict(t=40, b=40, l=30, r=10),
             "font": dict(size=10),
-            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
-            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
+            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
             "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
         }))
     else:
@@ -573,11 +584,12 @@ def build_cashflow(uid, mobile=False):
     if mobile:
         fig.update_layout(**cl("Flujo de Fondos", {
             "barmode": "relative", "height": 300,
+            "dragmode": False,
             "margin": dict(t=40, b=50, l=30, r=10),
             "font": dict(size=10),
-            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL),
-            "yaxis": dict(title="", tickfont=dict(size=9), gridcolor=GRID_COL),
-            "yaxis2": dict(title="", overlaying="y", side="right", showgrid=False, tickfont=dict(size=9)),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
+            "yaxis": dict(title="", tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
+            "yaxis2": dict(title="", overlaying="y", side="right", showgrid=False, tickfont=dict(size=9), fixedrange=True),
             "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=9)),
         }))
     else:
