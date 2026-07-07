@@ -68,33 +68,49 @@ def get_cash_flow_projection(user_id: int, months_back: int = 2, months_ahead: i
 # ──────────────────────────────────────────────
 
 def get_liquidity_alerts(user_id: int, months_ahead: int = 4) -> list:
-    today   = datetime.now()
-    balance = get_current_balance(user_id)
-    alerts  = []; running = balance
-    conn    = get_conn()
+    today  = datetime.now()
+    alerts = []
+    conn   = get_conn()
 
-    for i in range(1, months_ahead + 1):
+    # Incluir mes actual (offset 0) + meses futuros
+    for i in range(0, months_ahead + 1):
         m = today.month + i; y = today.year
         while m > 12: m -= 12; y += 1
         ym = f"{y}-{m:02d}"
+        label = "Mes actual" if i == 0 else ym
         c = conn.cursor()
         c.execute("SELECT type, COALESCE(SUM(amount),0) FROM transactions "
                   "WHERE user_id=%s AND TO_CHAR(date,'YYYY-MM')=%s GROUP BY type",
                   (user_id, ym))
         res = dict(c.fetchall())
-        inc = float(res.get("income", 0)); exp = float(res.get("expense", 0))
-        running += inc - exp
-        if exp == 0 and inc == 0: continue
-        deficit = exp - inc
-        if running < 0:
+        inc = float(res.get("income", 0))
+        exp = float(res.get("expense", 0))
+
+        if inc == 0 and exp == 0:
+            continue
+
+        if inc == 0:
+            # Sin ingresos pero hay gastos: grave
             alerts.append({"month": ym, "severity": "danger",
-                "message": f"🔴 CRÍTICO — {ym}: gastos superan ingresos en ${deficit:,.2f}. Balance proyectado NEGATIVO: ${running:,.2f}."})
-        elif deficit > 0:
+                "message": f"🚨 GRAVE — {label}: gastos de ${exp:,.2f} sin ingresos registrados."})
+            continue
+
+        ratio = exp / inc  # proporción gastos/ingresos
+
+        if ratio > 1:
+            exceso = exp - inc
+            alerts.append({"month": ym, "severity": "danger",
+                "message": f"🚨 GRAVE — {label}: los gastos superan los ingresos en ${exceso:,.2f} ({ratio*100:.1f}% de los ingresos)."})
+        elif ratio >= 0.95:
+            alerts.append({"month": ym, "severity": "danger",
+                "message": f"🔴 CRÍTICO — {label}: los gastos representan el {ratio*100:.1f}% de los ingresos (${exp:,.2f} de ${inc:,.2f})."})
+        elif ratio >= 0.90:
             alerts.append({"month": ym, "severity": "warning",
-                "message": f"🟡 ATENCIÓN — {ym}: los gastos superarán los ingresos en ${deficit:,.2f}. Balance: ${running:,.2f}."})
-        elif running < balance * 0.15 and balance > 0:
+                "message": f"🟡 ATENCIÓN — {label}: los gastos representan el {ratio*100:.1f}% de los ingresos (${exp:,.2f} de ${inc:,.2f})."})
+        elif ratio >= 0.85:
             alerts.append({"month": ym, "severity": "warning",
-                "message": f"🟠 PRECAUCIÓN — {ym}: balance podría caer a ${running:,.2f}, menos del 15 % del actual."})
+                "message": f"🟠 PRECAUCIÓN — {label}: los gastos representan el {ratio*100:.1f}% de los ingresos (${exp:,.2f} de ${inc:,.2f})."})
+
     conn.close()
     return alerts
 
