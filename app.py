@@ -732,7 +732,7 @@ def build_report(uid):
                     dbc.Col([
                         dbc.Label("Seleccioná el mes", style={"color":C["muted"]}),
                         dcc.Dropdown(id="report-month", options=_month_options(),
-                                     value=_month_options()[0]["value"],
+                                     placeholder="Seleccioná un mes...",
                                      style={"color":"#000"}, clearable=False),
                     ], md=4),
                     dbc.Col(dbc.Button("📊  Generar Reporte", id="btn-report",

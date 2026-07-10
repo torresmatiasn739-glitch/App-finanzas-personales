@@ -75,6 +75,7 @@ def _sheet_transactions(wb, transactions, year_month):
     # Datos
     for i, tx in enumerate(transactions):
         row = i + 3
+        ws.row_dimensions[row].height = 18
         is_income = tx[1] == "income"
         bg = C_DARK if i % 2 == 0 else C_ROW_ALT
         amount = float(tx[2]) if is_income else -float(tx[2])
@@ -274,11 +275,15 @@ def _sheet_summary(wb, data, report_text, projection):
         for line in report_text.split("\n"):
             clean = line.strip().lstrip("#").strip()
             if not clean:
-                ws.row_dimensions[next_row].height = 8
+                ws.row_dimensions[next_row].height = 6
                 write(next_row, 1, "", fill_color=C_DARK, merge_to=8)
             else:
                 is_heading = line.startswith("#")
-                ws.row_dimensions[next_row].height = 20 if is_heading else 16
+                # Estimate row height: ~1.2 chars per unit width, 8 cols * ~14 width each
+                chars_per_row = 110
+                estimated_lines = max(1, len(clean) // chars_per_row + 1)
+                base_height = 22 if is_heading else 15
+                ws.row_dimensions[next_row].height = base_height * estimated_lines
                 ws.merge_cells(
                     start_row=next_row, start_column=1,
                     end_row=next_row,   end_column=8)
@@ -287,7 +292,7 @@ def _sheet_summary(wb, data, report_text, projection):
                                        color=C_WARNING if is_heading else C_WHITE,
                                        size=11 if is_heading else 10)
                 cell.fill      = _fill(C_HEADER if is_heading else C_DARK)
-                cell.alignment = Alignment(horizontal="left", vertical="center",
+                cell.alignment = Alignment(horizontal="left", vertical="top",
                                            wrap_text=True)
                 cell.border    = _border()
             next_row += 1
