@@ -159,6 +159,8 @@ app.layout = dbc.Container([
     dcc.Store(id="saved-flag",         data=0),
     dcc.Store(id="voice-result-store", data=None),
     dcc.Store(id="rec-verified-user",  data=None),
+    dcc.Store(id="report-data-store",  data=None),
+    dcc.Store(id="report-text-store",  data=None),
     dcc.Interval(id="voice-poll-interval", interval=500, n_intervals=0),
     html.Div(id="voice-start-dummy", style={"display": "none"}),
     html.Div(id="voice-stop-dummy",  style={"display": "none"}),
@@ -745,8 +747,7 @@ def build_report(uid):
 
         dcc.Loading(html.Div(id="report-output"), type="circle",
                     color=C["primary"]),
-        dcc.Store(id="report-data-store", data=None),
-        dcc.Store(id="report-text-store", data=None),
+
     ])
 
 
