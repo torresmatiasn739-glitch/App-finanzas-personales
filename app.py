@@ -169,6 +169,7 @@ app.layout = dbc.Container([
     # Toast
     dbc.Toast(id="toast-msg", header="", is_open=False, duration=3500,
               style={"position":"fixed","top":20,"right":20,"zIndex":9999,"minWidth":"280px"}),
+    dcc.Download(id="download-excel"),
 ], fluid=True, style={"backgroundColor": C["bg_dark"], "minHeight": "100vh", "padding": "0 24px 40px"})
 
 
@@ -349,7 +350,7 @@ def build_dashboard(uid, mobile=False):
     bal  = get_current_balance(uid)
 
     kpi_row = dbc.Row([
-        dbc.Col(kpi_card("Balance Total",    f"${bal:,.2f}",               "Acumulado",         C["primary"], "💰"), md=3, sm=6, className="mb-3"),
+        dbc.Col(kpi_card("Restante del Mes", f"${kpis['income']-kpis['expense']:,.2f}", ym, C["primary"], "💰"), md=3, sm=6, className="mb-3"),
         dbc.Col(kpi_card("Ingresos del Mes", f"${kpis['income']:,.2f}",    ym,                  C["income"],  "📥"), md=3, sm=6, className="mb-3"),
         dbc.Col(kpi_card("Gastos del Mes",   f"${kpis['expense']:,.2f}",   ym,                  C["expense"], "📤"), md=3, sm=6, className="mb-3"),
         dbc.Col(kpi_card("Tasa de Ahorro",   f"{kpis['savings_rate']:.1f}%","Del ingreso",      C["warning"], "💹"), md=3, sm=6, className="mb-3"),
@@ -735,12 +736,17 @@ def build_report(uid):
                     dbc.Col(dbc.Button("📊  Generar Reporte", id="btn-report",
                                        color="primary", n_clicks=0,
                                        style={"marginTop":"24px"}), md=3),
+                    dbc.Col(dbc.Button("📥  Descargar Excel", id="btn-download-excel",
+                                       color="success", n_clicks=0,
+                                       style={"marginTop":"24px"}), md=3),
                 ]),
             ])
         ], style=cs(C["primary"]), className="mb-4"),
 
         dcc.Loading(html.Div(id="report-output"), type="circle",
                     color=C["primary"]),
+        dcc.Store(id="report-data-store", data=None),
+        dcc.Store(id="report-text-store", data=None),
     ])
 
 
@@ -867,42 +873,96 @@ def del_row(prev, curr):
 # ──────────────────────────────────────────────
 
 @app.callback(
-    Output("report-output","children"),
+    Output("report-output",     "children"),
+    Output("report-data-store", "data"),
+    Output("report-text-store", "data"),
     Input("btn-report","n_clicks"),
     State("report-month","value"),
     State("active-user-id","data"),
     prevent_initial_call=True,
 )
 def gen_report(n, month, uid):
-    if not uid or not month: return dbc.Alert("Seleccioná un mes.", color="warning")
+    if not uid or not month:
+        return dbc.Alert("Seleccioná un mes.", color="warning"), no_update, no_update
     try:
         from groq_utils import generate_report
         data = get_monthly_detail(uid, month)
-        kpis = get_monthly_kpis(uid, month)
 
         kpi_row = dbc.Row([
-            dbc.Col(kpi_card("Ingresos",      f"${data['income']:,.2f}",          month,                       C["income"],  "📥"), md=3, sm=6, className="mb-3"),
-            dbc.Col(kpi_card("Gastos",         f"${data['expense']:,.2f}",         month,                       C["expense"], "📤"), md=3, sm=6, className="mb-3"),
-            dbc.Col(kpi_card("Balance",        f"${data['balance']:,.2f}",         "Neto del mes",              C["primary"], "💰"), md=3, sm=6, className="mb-3"),
-            dbc.Col(kpi_card("Tasa de Ahorro", f"{data['savings_rate']:.1f}%",     "vs anterior: " + (
-                f"{data['savings_rate']-data['prev_savings_rate']:+.1f}pp"), C["warning"], "💹"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Ingresos",      f"${data['income']:,.2f}",      month,          C["income"],  "📥"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Gastos",         f"${data['expense']:,.2f}",    month,          C["expense"], "📤"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Balance",        f"${data['balance']:,.2f}",    "Neto del mes", C["primary"], "💰"), md=3, sm=6, className="mb-3"),
+            dbc.Col(kpi_card("Tasa de Ahorro", f"{data['savings_rate']:.1f}%",
+                "vs anterior: " + f"{data['savings_rate']-data['prev_savings_rate']:+.1f}pp",
+                C["warning"], "💹"), md=3, sm=6, className="mb-3"),
         ], className="mb-3")
 
         report_text = generate_report(data)
 
-        return html.Div([
+        # Serializar data para el store (convertir tuples a listas)
+        data_store = {
+            **{k: v for k, v in data.items()
+               if k not in ["categories","prev_categories","upcoming_payments"]},
+            "categories":        [list(x) for x in data["categories"]],
+            "prev_categories":   [list(x) for x in data["prev_categories"]],
+            "upcoming_payments": [list(x) for x in data["upcoming_payments"]],
+        }
+
+        output = html.Div([
             kpi_row,
             dbc.Card([
                 dbc.CardHeader(html.H6(f"Reporte generado por IA — {month}",
-                                       style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+                    style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
                 dbc.CardBody(dcc.Markdown(report_text,
                     style={"color":C["text"],"lineHeight":"1.7","fontSize":"0.95rem"})),
             ], style=cs(C["primary"])),
         ])
+        return output, data_store, report_text
     except ValueError as e:
-        return dbc.Alert(str(e), color="warning")
+        return dbc.Alert(str(e), color="warning"), no_update, no_update
     except Exception as e:
-        return dbc.Alert(f"Error al generar el reporte: {str(e)}", color="danger")
+        return dbc.Alert(f"Error al generar el reporte: {str(e)}", color="danger"), no_update, no_update
+
+
+@app.callback(
+    Output("download-excel", "data"),
+    Input("btn-download-excel", "n_clicks"),
+    State("report-data-store",  "data"),
+    State("report-text-store",  "data"),
+    State("active-user-id",     "data"),
+    prevent_initial_call=True,
+)
+def download_excel(n, data_store, report_text, uid):
+    if not n or not data_store or not uid:
+        return no_update
+    try:
+        from excel_report import generate_excel_report
+        from database import get_transactions
+
+        year_month = data_store["year_month"]
+        # Reconstruir data con tuples
+        data = {
+            **{k: v for k, v in data_store.items()
+               if k not in ["categories","prev_categories","upcoming_payments"]},
+            "categories":        [tuple(x) for x in data_store["categories"]],
+            "prev_categories":   [tuple(x) for x in data_store["prev_categories"]],
+            "upcoming_payments": [tuple(x) for x in data_store["upcoming_payments"]],
+        }
+
+        # Obtener transacciones del mes
+        start = f"{year_month}-01"
+        import calendar
+        y, m = map(int, year_month.split("-"))
+        last_day = calendar.monthrange(y, m)[1]
+        end = f"{year_month}-{last_day:02d}"
+        transactions = get_transactions(uid, start_date=start, end_date=end)
+
+        excel_bytes = generate_excel_report(transactions, data, report_text)
+        filename    = f"reporte_finanzas_{year_month}.xlsx"
+
+        return dcc.send_bytes(excel_bytes, filename)
+    except Exception as e:
+        return no_update
 
 
 # ──────────────────────────────────────────────
