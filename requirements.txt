@@ -8,3 +8,4 @@ bcrypt>=4.0.0
 groq>=0.9.0
 
 openpyxl
+python-telegram-bot[job-queue]>=20.0

@@ -37,6 +37,8 @@ from analytics import (
 # ──────────────────────────────────────────────
 
 init_db()
+from investor_profile import init_profile_table
+init_profile_table()
 
 def is_mobile() -> bool:
     """Detecta si el request viene de un dispositivo móvil via User-Agent."""
@@ -191,9 +193,8 @@ def _build_app_layout(username, user_id):
     tabs = dbc.Tabs([
         dbc.Tab(label="📊  Dashboard",       tab_id="dashboard"),
         dbc.Tab(label="💳  Transacciones",   tab_id="transactions"),
-        dbc.Tab(label="📅  Flujo de Fondos", tab_id="cashflow"),
         dbc.Tab(label="🚨  Alertas",         tab_id="alerts"),
-        dbc.Tab(label="📈  Inversiones",     tab_id="investments"),
+        dbc.Tab(label="📈  Inversiones",     tab_id="investor"),
         dbc.Tab(label="📋  Reporte IA",      tab_id="report"),
         dbc.Tab(label="🎙️  Voz",            tab_id="voice"),
     ], id="main-tabs", active_tab="dashboard", className="mb-4")
@@ -334,9 +335,8 @@ def render_tab(tab, _, uid):
     mobile = is_mobile()
     if tab == "dashboard":    return build_dashboard(uid, mobile)
     if tab == "transactions": return build_transactions(uid)
-    if tab == "cashflow":     return build_cashflow(uid, mobile)
     if tab == "alerts":       return build_alerts(uid)
-    if tab == "investments":  return build_investments(uid)
+    if tab == "investor":     return build_investor(uid)
     if tab == "report":       return build_report(uid)
     if tab == "voice":        return build_voice(uid)
     return html.Div()
@@ -358,8 +358,7 @@ def build_dashboard(uid, mobile=False):
         dbc.Col(kpi_card("Tasa de Ahorro",   f"{kpis['savings_rate']:.1f}%","Del ingreso",      C["warning"], "💹"), md=3, sm=6, className="mb-3"),
     ], className="mb-2")
 
-    graph_cfg = {"displayModeBar": False, "scrollZoom": False,
-                 "doubleClick": False, "dragmode": False}
+    graph_cfg = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
 
     mdf = get_monthly_summary(uid)
     fb  = go.Figure()
@@ -415,7 +414,36 @@ def build_dashboard(uid, mobile=False):
         fp = go.Figure()
         fp.update_layout(**cl(f"Gastos por Rubro ({ym}) — Sin datos"))
 
+    # ── Balance projection using simple avg savings rate per month ──
+    # Solo meses reales (hasta el mes actual) para evitar distorsión de meses proyectados
+    current_ym = datetime.now().strftime("%Y-%m")
+    mdf_all = get_monthly_summary(uid)
+    avg_savings_rate = 0.0
+    if not mdf_all.empty:
+        # Filtrar solo meses reales <= mes actual
+        real_months = sorted([m for m in mdf_all["month"].unique() if m <= current_ym])
+        rates = []
+        for m in real_months:
+            inc = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="income")]["total"].sum())
+            exp = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="expense")]["total"].sum())
+            if inc > 0 and exp > 0:
+                # Tasa mensual individual: (ingreso - gasto) / ingreso
+                rates.append((inc - exp) / inc)
+        # Promedio simple: suma de tasas / cantidad de meses reales
+        avg_savings_rate = sum(rates) / len(rates) if rates else 0.0
+
     proj = get_cash_flow_projection(uid, 3, 4)
+    # Override future balance using avg savings rate applied to projected income
+    running = 0.0
+    for i, p in enumerate(proj):
+        if not p["is_future"]:
+            running = p["balance"]
+        else:
+            # Use avg savings rate * projected income as net for future months
+            projected_net = p["income"] * avg_savings_rate if p["income"] > 0 else p["net"]
+            running += projected_net
+            proj[i] = {**p, "net": projected_net, "balance": running}
+
     pf   = pd.DataFrame(proj)
     fl   = go.Figure()
     if not pf.empty:
@@ -429,7 +457,6 @@ def build_dashboard(uid, mobile=False):
     if mobile:
         fl.update_layout(**cl("Balance", {
             "height": 250,
-            "dragmode": False,
             "margin": dict(t=40, b=40, l=30, r=10),
             "font": dict(size=10),
             "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
@@ -438,6 +465,29 @@ def build_dashboard(uid, mobile=False):
         }))
     else:
         fl.update_layout(**cl("Evolución del Balance", {"height": 300}))
+
+    # ── Monthly detail table ──
+    det_rows = [{"Mes": p["month"],
+                 "Ingresos": f"${p['income']:,.2f}",
+                 "Gastos":   f"${p['expense']:,.2f}",
+                 "Neto":     f"${p['net']:,.2f}",
+                 "Balance":  f"${p['balance']:,.2f}",
+                 "Estado":   "🔮 Proyectado" if p["is_future"] else "✅ Real"} for p in proj]
+    detail_table = dbc.Card([
+        dbc.CardHeader(html.H6("📅  Detalle Mensual", style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
+        dbc.CardBody(dash_table.DataTable(
+            data=det_rows,
+            columns=[{"name":n,"id":n} for n in ["Mes","Ingresos","Gastos","Neto","Balance","Estado"]],
+            style_table={"overflowX":"auto"},
+            style_cell={"backgroundColor":C["bg_card"],"color":C["text"],"textAlign":"center",
+                        "padding":"9px","border":f"1px solid {C['border']}"},
+            style_header={"backgroundColor":C["bg_dark"],"color":C["primary"],"fontWeight":"700","border":f"1px solid {C['border']}"},
+            style_data_conditional=[
+                {"if":{"filter_query":'{Estado} contains "Proyectado"'},"backgroundColor":"#1a1f15"},
+                {"if":{"filter_query":'{Neto} contains "-"'},"color":C["expense"]},
+            ],
+        )),
+    ], style=cs(), className="mb-3")
 
     txs = get_transactions(uid)[:8]
     # Mobile: tabla simplificada con menos columnas
@@ -471,6 +521,7 @@ def build_dashboard(uid, mobile=False):
             dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
             dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
             dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+            detail_table,
             dbc.Card([
                 dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
                 dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
@@ -484,6 +535,7 @@ def build_dashboard(uid, mobile=False):
             dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs()), md=5, className="mb-3"),
         ]),
         dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+        detail_table,
         dbc.Card([
             dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
             dbc.CardBody(tbl if txs else html.P("Sin transacciones.", style={"color":C["muted"]})),
@@ -564,8 +616,7 @@ def build_cashflow(uid, mobile=False):
     proj = get_cash_flow_projection(uid, back, ahead)
     pf   = pd.DataFrame(proj)
     fig  = go.Figure()
-    graph_cfg = {"displayModeBar": False, "scrollZoom": False,
-                 "doubleClick": False, "dragmode": False}
+    graph_cfg = {"displayModeBar": False, "scrollZoom": False, "doubleClick": False}
 
     if not pf.empty:
         past = pf[~pf.is_future]; fut = pf[pf.is_future]
@@ -1111,6 +1162,215 @@ def confirm_voice(n, ttype, amount, category, desc, txdate, uid, flag):
     except Exception as e:
         return dbc.Alert(f"❌ Error: {e}", color="danger"), no_update
 
+
+
+# ══════════════════════════════════════════════
+# TAB 8 — Perfil de Inversor
+# ══════════════════════════════════════════════
+
+def build_investor(uid):
+    from investor_profile import get_investor_profile, QUESTIONS, PROFILES
+
+    existing = get_investor_profile(uid)
+    if existing:
+        return _render_profile_result(existing, uid, show_redo=True)
+    # New user: show intro card with button to start
+    return html.Div([
+        dbc.Card(dbc.CardBody([
+            html.Div([
+                html.Span("🤔", style={"fontSize":"3rem"}),
+                html.Div([
+                    html.H4("¿No sabés en qué invertir?",
+                            style={"color":"white","fontWeight":"800","margin":"0"}),
+                    html.P("Realizá este cuestionario para conocer tu perfil de inversor "
+                           "y recibir recomendaciones personalizadas en base a tus "
+                           "objetivos y preferencias.",
+                           style={"color":C["muted"],"margin":"8px 0 0"}),
+                ], style={"marginLeft":"18px"}),
+            ], style={"display":"flex","alignItems":"flex-start","marginBottom":"20px"}),
+            dbc.Button("📋  Realizar test", id="btn-start-survey",
+                       color="success", size="lg", n_clicks=0),
+        ]), style=cs(C["primary"]), className="mb-4"),
+        html.Div(id="survey-area"),
+    ])
+
+
+def _profile_color(name):
+    MAP = {
+        "Conservador":         "#3B9EFF",
+        "Conservador Moderado":"#00D4AA",
+        "Moderado":            "#FFB84D",
+        "Moderado Agresivo":   "#FF8C00",
+        "Agresivo":            "#FF5C5C",
+    }
+    return MAP.get(name, C["primary"])
+
+
+def _render_profile_result(result, uid, show_redo=False):
+    p     = result["profile"]
+    color = _profile_color(p["name"])
+
+    asset_items = [html.Li(a, style={"color": C["text"], "marginBottom": "4px"})
+                   for a in p["assets"]]
+
+    header = dbc.Card(dbc.CardBody(html.Div([
+        html.Span(p["icon"], style={"fontSize": "3rem"}),
+        html.Div([
+            html.P("Tu perfil de inversor",
+                   style={"color": C["muted"], "fontSize": "0.85rem", "margin": "0"}),
+            html.H2(p["name"], style={"color": color, "fontWeight": "800", "margin": "4px 0"}),
+            html.P(f"Puntaje: {result['score']} / 100",
+                   style={"color": C["muted"], "margin": "0"}),
+        ], style={"marginLeft": "18px"}),
+    ], style={"display": "flex", "alignItems": "center"})),
+    style={**cs(color), "marginBottom": "20px"})
+
+    alloc_card = dbc.Card(dbc.CardBody([
+        html.H6("📊  Asignación sugerida",
+                style={"color": color, "fontWeight": "700", "marginBottom": "8px"}),
+        html.P(p["alloc"], style={"color": C["text"]}),
+        html.H6("🏦  Activos recomendados",
+                style={"color": color, "fontWeight": "700", "margin": "12px 0 8px"}),
+        html.Ul(asset_items, style={"paddingLeft": "20px", "margin": "0"}),
+    ]), style=cs(), className="mb-3")
+
+    redo = html.Div()
+    if show_redo:
+        completed = result.get("completed_at", "")
+        redo = html.Div([
+            html.P(f"Cuestionario completado el {completed}",
+                   style={"color": C["muted"], "fontSize": "0.82rem", "marginBottom": "8px"}),
+            dbc.Button("🔄  Rehacer cuestionario", id="btn-redo-profile",
+                       color="outline-secondary", size="sm", n_clicks=0),
+            html.Div(id="redo-profile-area", className="mt-3"),
+        ])
+
+    return html.Div([header, alloc_card, redo])
+
+
+def _render_questionnaire(uid, show_intro=True):
+    from investor_profile import QUESTIONS
+
+    intro = html.Div()
+    if show_intro:
+        intro = dbc.Alert([
+            html.H5("🧠  Cuestionario de Perfil de Inversor", className="alert-heading"),
+            html.P("Respondé las siguientes preguntas para determinar tu perfil. "
+                   "El resultado se guarda y se usa para personalizar las recomendaciones de inversión. "
+                   "La pregunta final es evaluada por IA."),
+        ], color="info", className="mb-4")
+
+    question_cards = []
+    current_dim = None
+
+    for q in QUESTIONS:
+        if q["dim"] != current_dim:
+            current_dim = q["dim"]
+            question_cards.append(
+                html.H6(f"📌  {current_dim}",
+                        style={"color": C["primary"], "marginTop": "20px",
+                               "marginBottom": "10px", "fontWeight": "700"}))
+
+        if q["type"] == "single":
+            opts = [{"label": label, "value": pts}
+                    for pts, label in q["options"]]
+            card = dbc.Card(dbc.CardBody([
+                dbc.Label(q["text"],
+                          style={"color": C["text"], "fontWeight": "600", "marginBottom": "10px"}),
+                dbc.RadioItems(id=f"iq-{q['id']}", options=opts,
+                               labelStyle={"color": C["muted"], "fontSize": "0.9rem"},
+                               inputStyle={"marginRight": "8px"}),
+            ]), style=cs(), className="mb-2")
+        else:
+            card = dbc.Card(dbc.CardBody([
+                dbc.Label(q["text"],
+                          style={"color": C["text"], "fontWeight": "600", "marginBottom": "10px"}),
+                html.Small("Esta respuesta será evaluada por IA (0 a 15 puntos)",
+                           style={"color": C["primary"], "display": "block", "marginBottom": "8px"}),
+                dbc.Textarea(id=f"iq-{q['id']}", placeholder="Escribí tu respuesta aquí...",
+                             style={"backgroundColor": C["bg_card"], "color": C["text"],
+                                    "border": f"1px solid {C['border']}"},
+                             rows=4),
+            ]), style=cs(C["primary"]), className="mb-2")
+
+        question_cards.append(card)
+
+    submit = html.Div([
+        dbc.Button("📊  Calcular mi perfil", id="btn-submit-profile",
+                   color="success", n_clicks=0, size="lg", className="mt-3"),
+        dcc.Loading(html.Div(id="profile-result-area", className="mt-4"),
+                    type="circle", color=C["primary"]),
+    ])
+
+    return html.Div([intro] + question_cards + [submit])
+
+
+# — Callbacks de Perfil de Inversor —
+
+@app.callback(
+    Output("profile-result-area", "children"),
+    Input("btn-submit-profile",   "n_clicks"),
+    [State(f"iq-{q['id']}", "value") for q in __import__("investor_profile").QUESTIONS],
+    State("active-user-id", "data"),
+    prevent_initial_call=True,
+)
+def submit_profile(n, *args):
+    from investor_profile import QUESTIONS, calculate_profile, save_investor_profile
+    states   = list(args)
+    uid      = states[-1]
+    q_values = states[:-1]
+
+    if not uid or not n:
+        return no_update
+
+    missing = [QUESTIONS[i]["text"][:40] for i, v in enumerate(q_values) if v is None]
+    if missing:
+        return dbc.Alert(
+            f"Respondé todas las preguntas. Faltan: {len(missing)}.",
+            color="warning")
+
+    answers = {q["id"]: q_values[i] for i, q in enumerate(QUESTIONS)}
+
+    try:
+        result = calculate_profile(answers)
+        save_investor_profile(uid, result["score"], result["profile_name"])
+        extra = []
+        if result["auto_conservador"]:
+            extra.append(dbc.Alert(
+                "⚠️  Una de tus respuestas indica perfil Conservador automático. "
+                "El puntaje fue ajustado.", color="warning", className="mb-3"))
+        if result["q9_explanation"]:
+            extra.append(dbc.Alert([
+                html.Strong("🤖  Evaluación IA (pregunta 9): "),
+                f"{result['q9_explanation']} ({result['q9_score']}/15 pts)"
+            ], color="info", className="mb-3"))
+        return html.Div(extra + [_render_profile_result(result, uid, show_redo=False)])
+    except Exception as e:
+        return dbc.Alert(f"Error al calcular perfil: {str(e)}", color="danger")
+
+
+@app.callback(
+    Output("redo-profile-area", "children"),
+    Input("btn-redo-profile",   "n_clicks"),
+    State("active-user-id",     "data"),
+    prevent_initial_call=True,
+)
+def redo_profile(n, uid):
+    if not n or not uid:
+        return no_update
+    return _render_questionnaire(uid, show_intro=False)
+
+
+@app.callback(
+    Output("survey-area", "children"),
+    Input("btn-start-survey", "n_clicks"),
+    State("active-user-id",   "data"),
+    prevent_initial_call=True,
+)
+def start_survey(n, uid):
+    if not n or not uid:
+        return no_update
+    return _render_questionnaire(uid, show_intro=False)
 
 # ──────────────────────────────────────────────
 # Flask route — procesar audio
