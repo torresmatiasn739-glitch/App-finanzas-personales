@@ -40,6 +40,19 @@ init_db()
 from investor_profile import init_profile_table
 init_profile_table()
 
+# ── Iniciar bot de Telegram en hilo paralelo ──
+import threading
+def _run_bot():
+    try:
+        from bot import main as bot_main
+        bot_main()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Bot de Telegram falló: {e}")
+
+_bot_thread = threading.Thread(target=_run_bot, daemon=True)
+_bot_thread.start()
+
 def is_mobile() -> bool:
     """Detecta si el request viene de un dispositivo móvil via User-Agent."""
     try:
@@ -1402,6 +1415,4 @@ def process_audio():
 # ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import os
-    port = int(os.environ.get("PORT", 8050))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(debug=True, port=8050)
