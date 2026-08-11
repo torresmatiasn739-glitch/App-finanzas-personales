@@ -278,11 +278,12 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Main
 # ──────────────────────────────────────────────
 
-def main():
+def build_app() -> Application:
+    """Construye y devuelve la app del bot sin iniciarla. Usada por app.py."""
     if not TOKEN or TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         raise ValueError("TELEGRAM_BOT_TOKEN no configurado en el .env")
 
-    app = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -302,11 +303,16 @@ def main():
         allow_reentry=True,
     )
 
-    app.add_handler(conv)
-    app.add_handler(MessageHandler(filters.ALL, unknown))
+    application.add_handler(conv)
+    application.add_handler(MessageHandler(filters.ALL, unknown))
+    return application
 
+
+def main():
+    """Entrada directa: python bot.py"""
+    application = build_app()
     logger.info("Bot iniciado. Presioná Ctrl+C para detener.")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":

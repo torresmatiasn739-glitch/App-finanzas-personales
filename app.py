@@ -42,10 +42,18 @@ init_profile_table()
 
 # ── Iniciar bot de Telegram en hilo paralelo ──
 import threading
+import asyncio
+
 def _run_bot():
     try:
-        from bot import main as bot_main
-        bot_main()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        from bot import build_app as build_bot_app
+        bot_app = build_bot_app()
+        loop.run_until_complete(bot_app.initialize())
+        loop.run_until_complete(bot_app.start())
+        loop.run_until_complete(bot_app.updater.start_polling(allowed_updates=["message"]))
+        loop.run_forever()
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"Bot de Telegram falló: {e}")
