@@ -86,16 +86,17 @@ PROFILES = [
 # ──────────────────────────────────────────────
 
 QUESTIONS = [
+    # ── A — Situación Financiera (25 pts) ──────────────────
     {
         "id":    "q1_1",
         "dim":   "A — Situación Financiera",
         "text":  "¿Cuál es tu situación laboral actual?",
         "type":  "single",
         "options": [
-            (0,  "Desempleado o con trabajos esporádicos/ocasionales"),
-            (1,  "Trabajo independiente o freelance con ingresos variables"),
-            (2,  "Relación de dependencia o trabajo independiente con ingresos regulares y estables"),
-            (3,  "Profesional con alta estabilidad y trayectoria"),
+            (0, "Desempleado o con trabajos esporádicos/ocasionales"),
+            (1, "Trabajo independiente o freelance con ingresos variables"),
+            (3, "Relación de dependencia o trabajo independiente con ingresos regulares y estables"),
+            (5, "Profesional con alta estabilidad y trayectoria"),
         ],
     },
     {
@@ -105,8 +106,8 @@ QUESTIONS = [
         "type":  "single",
         "options": [
             (0, "Secundario completo o incompleto / Terciario o universitario en curso"),
-            (1, "Terciario o Universitario completo en áreas NO relacionadas con finanzas o economía"),
-            (3, "Terciario, Universitario o Posgrado con formación directa en Economía, Finanzas, Administración o carreras afines"),
+            (2, "Terciario o Universitario completo en áreas NO relacionadas con finanzas o economía"),
+            (5, "Terciario, Universitario o Posgrado con formación directa en Economía, Finanzas, Administración o carreras afines"),
         ],
     },
     {
@@ -115,10 +116,10 @@ QUESTIONS = [
         "text":  "¿Cuál es el nivel y estabilidad de tus ingresos?",
         "type":  "single",
         "options": [
-            (1,  "Variables / Inestables (trabajos esporádicos o estacionales)"),
-            (3,  "Estables, pero cubren lo justo para mis gastos básicos mensuales"),
-            (7,  "Estables, con capacidad de ahorro regular (hasta un 20% de mi ingreso)"),
-            (10, "Altos y muy estables, con alta capacidad de ahorro (más del 20%)"),
+            (1, "Variables / Inestables (trabajos esporádicos o estacionales)"),
+            (2, "Estables, pero cubren lo justo para mis gastos básicos mensuales"),
+            (4, "Estables, con capacidad de ahorro regular (hasta un 20% de mi ingreso)"),
+            (7, "Altos y muy estables, con alta capacidad de ahorro (más del 20%)"),
         ],
     },
     {
@@ -128,8 +129,8 @@ QUESTIONS = [
         "type":  "single",
         "options": [
             (1, "Soy el único sostén de una familia numerosa (3 o más personas a cargo)"),
-            (3, "Tengo familia a cargo, pero comparto los gastos con mi pareja / otro familiar"),
-            (6, "No tengo personas a cargo / Mis ingresos son 100% para mí"),
+            (2, "Tengo familia a cargo, pero comparto los gastos con mi pareja / otro familiar"),
+            (4, "No tengo personas a cargo / Mis ingresos son 100% para mí"),
         ],
     },
     {
@@ -140,12 +141,13 @@ QUESTIONS = [
         "auto_conservador": True,
         "auto_value": 0,
         "options": [
-            (0,  "Necesito usar este dinero para pagar deudas o gastos fijos el próximo mes"),
-            (3,  "Podría necesitar una parte importante de estos fondos en los próximos 6 a 12 meses"),
-            (7,  "No tengo gastos grandes previstos a corto plazo, pero me gusta tener liquidez"),
-            (10, "No planeo tocar este dinero, mis gastos cotidianos y emergencias ya están cubiertos"),
+            (0, "Necesito usar este dinero para pagar deudas o gastos fijos el próximo mes"),
+            (1, "Podría necesitar una parte importante de estos fondos en los próximos 6 a 12 meses"),
+            (3, "No tengo gastos grandes previstos a corto plazo, pero me gusta tener liquidez"),
+            (4, "No planeo tocar este dinero, mis gastos cotidianos y emergencias ya están cubiertos"),
         ],
     },
+    # ── B — Horizonte y Objetivos (15 pts) ─────────────────
     {
         "id":    "q5",
         "dim":   "B — Horizonte y Objetivos",
@@ -154,8 +156,8 @@ QUESTIONS = [
         "options": [
             (0, "Menos de 1 año (Corto plazo)"),
             (2, "Entre 1 y 3 años (Mediano plazo)"),
-            (6, "Entre 3 y 5 años (Mediano-Largo plazo)"),
-            (8, "Más de 5 años (Largo plazo)"),
+            (5, "Entre 3 y 5 años (Mediano-Largo plazo)"),
+            (7, "Más de 5 años (Largo plazo)"),
         ],
     },
     {
@@ -164,26 +166,68 @@ QUESTIONS = [
         "text":  "¿Cuál es el objetivo principal de esta inversión?",
         "type":  "single",
         "auto_conservador": True,
-        "auto_value": 2,
+        "auto_value": 1,
         "options": [
-            (2,  "Proteger el valor de mis ahorros sin perder dinero, aunque gane poco"),
-            (5,  "Ganar un poco más que la inflación, asumiendo un riesgo mínimo"),
-            (8,  "Lograr un crecimiento significativo a mediano plazo, aceptando fluctuaciones moderadas"),
-            (10, "Maximizar mis ganancias a largo plazo, asumiendo grandes riesgos y volatilidad"),
+            (1, "Proteger el valor de mis ahorros sin perder dinero, aunque gane poco"),
+            (3, "Ganar un poco más que la inflación, asumiendo un riesgo mínimo"),
+            (6, "Lograr un crecimiento significativo a mediano plazo, aceptando fluctuaciones moderadas"),
+            (8, "Maximizar mis ganancias a largo plazo, asumiendo grandes riesgos y volatilidad"),
         ],
     },
+    # ── C — Conocimiento Financiero (25 pts) ───────────────
     {
         "id":    "q7",
         "dim":   "C — Conocimiento Financiero",
         "text":  "¿Cuál es tu experiencia con instrumentos financieros?",
         "type":  "single",
         "options": [
-            (3,  "Ninguna. Solo conozco cuentas de ahorro, billeteras virtuales o plazos fijos"),
-            (5,  "Básica. Entiendo cómo funcionan bonos y FCI de bajo riesgo"),
-            (7,  "Intermedia. Conozco y he operado acciones, CEDEARs o bonos corporativos"),
-            (10, "Avanzada. Entiendo y opero opciones, futuros, ETFs volátiles y/o criptomonedas"),
+            (2, "Ninguna. Solo conozco cuentas de ahorro, billeteras virtuales o plazos fijos"),
+            (4, "Básica. Entiendo cómo funcionan bonos y FCI de bajo riesgo"),
+            (6, "Intermedia. Conozco y he operado acciones, CEDEARs o bonos corporativos"),
+            (8, "Avanzada. Entiendo y opero opciones, futuros, ETFs volátiles y/o criptomonedas"),
         ],
     },
+    {
+        "id":   "q10",
+        "dim":  "C — Conocimiento Financiero",
+        "text": (
+            "Si tuvieras que explicarle a un nene de 10 años cuál es la diferencia entre ahorrar e "
+            "invertir, ¿qué ejemplo usarías?"
+        ),
+        "type":        "text",
+        "short_label": "Conocimiento real",
+        "max_score":   8,
+        "criteria": (
+            "- 0 a 2 puntos: Nivel bajo. Da ejemplos confusos o asocia invertir únicamente a dejar el "
+            "dinero en el banco sin comprender el riesgo o el rendimiento.\n"
+            "- 3 a 5 puntos: Nivel medio. Entiende la idea de rendimiento básico y la diferencia entre "
+            "guardar y generar un interés.\n"
+            "- 6 a 8 puntos: Nivel alto. Comprende conceptualmente el riesgo, el costo de oportunidad "
+            "y la multiplicación del capital a través del tiempo."
+        ),
+    },
+    {
+        "id":   "q12",
+        "dim":  "C — Conocimiento Financiero",
+        "text": (
+            "Contanos de tus experiencias previas invirtiendo (en qué lo hiciste, cómo te fue, alguna "
+            "anécdota, etc.)."
+        ),
+        "type":        "text",
+        "short_label": "Experiencia previa invirtiendo",
+        "max_score":   9,
+        "criteria": (
+            "- 0 a 3 puntos: Sin experiencia previa invirtiendo, o la relata de forma confusa/vaga, sin "
+            "poder mencionar en qué invirtió ni qué aprendió.\n"
+            "- 4 a 6 puntos: Tiene experiencia limitada, en instrumentos simples y de bajo riesgo (ej. "
+            "plazo fijo, compra de dólares), o el relato no evidencia una comprensión clara de riesgos "
+            "ni resultados.\n"
+            "- 7 a 9 puntos: Tiene experiencia relevante y demuestra conocimiento real: menciona "
+            "instrumentos concretos (acciones, bonos, CEDEARs, criptomonedas, fondos, etc.), resultados "
+            "obtenidos y aprendizajes o gestión del riesgo."
+        ),
+    },
+    # ── D — Tolerancia Psicológica al Riesgo (35 pts) ──────
     {
         "id":    "q8",
         "dim":   "D — Tolerancia Psicológica al Riesgo",
@@ -193,9 +237,9 @@ QUESTIONS = [
         "auto_value": 0,
         "options": [
             (0,  "Entro en pánico y vendo todo inmediatamente para no seguir perdiendo"),
-            (2,  "Vendo una parte para proteger lo que queda"),
-            (6,  "No hago nada, espero a que el mercado se recupere confiando en el largo plazo"),
-            (10, "Aprovecho la caída para comprar más, ya que los activos están más baratos"),
+            (3,  "Vendo una parte para proteger lo que queda"),
+            (8,  "No hago nada, espero a que el mercado se recupere confiando en el largo plazo"),
+            (12, "Aprovecho la caída para comprar más, ya que los activos están más baratos"),
         ],
     },
     {
@@ -207,30 +251,11 @@ QUESTIONS = [
         ),
         "type":        "text",
         "short_label": "Actitud ante la incertidumbre",
-        "max_score":   15,
+        "max_score":   13,
         "criteria": (
-            "- 0 a 4 puntos: Rechazo total al riesgo, prioriza la seguridad absoluta.\n"
-            "- 5 a 7 puntos: Duda, la tomaría solo con una pequeña parte de su capital.\n"
-            "- 8 a 15 puntos: Aceptación total, entiende la asimetría riesgo/beneficio y le entusiasma."
-        ),
-    },
-    {
-        "id":   "q10",
-        "dim":  "E — Educación Financiera",
-        "text": (
-            "Si tuvieras que explicarle a un nene de 10 años cuál es la diferencia entre ahorrar e "
-            "invertir, ¿qué ejemplo usarías?"
-        ),
-        "type":        "text",
-        "short_label": "Conocimiento real",
-        "max_score":   10,
-        "criteria": (
-            "- 0 a 4 puntos: Nivel bajo. Da ejemplos confusos o asocia invertir únicamente a dejar el "
-            "dinero en el banco sin comprender el riesgo o el rendimiento.\n"
-            "- 5 a 7 puntos: Nivel medio. Entiende la idea de rendimiento básico y la diferencia entre "
-            "guardar y generar un interés.\n"
-            "- 8 a 10 puntos: Nivel alto. Comprende conceptualmente el riesgo, el costo de oportunidad "
-            "y la multiplicación del capital a través del tiempo."
+            "- 0 a 3 puntos: Rechazo total al riesgo, prioriza la seguridad absoluta.\n"
+            "- 4 a 7 puntos: Duda, la tomaría solo con una pequeña parte de su capital.\n"
+            "- 8 a 13 puntos: Aceptación total, entiende la asimetría riesgo/beneficio y le entusiasma."
         ),
     },
     {
