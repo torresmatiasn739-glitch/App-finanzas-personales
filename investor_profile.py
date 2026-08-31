@@ -241,11 +241,14 @@ Respondé ÚNICAMENTE con JSON válido sin texto adicional:
             model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=100,
+            max_tokens=500,
+            reasoning_effort="low",
         )
         import json
-        raw  = resp.choices[0].message.content.strip()
+        raw  = (resp.choices[0].message.content or "").strip()
         raw  = raw.replace("```json", "").replace("```", "").strip()
+        if not raw:
+            return 7, "Evaluación IA no disponible (respuesta vacía del modelo)."
         data = json.loads(raw)
         score = max(0, min(15, int(data.get("score", 7))))
         expl  = data.get("explanation", "")

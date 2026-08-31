@@ -81,10 +81,13 @@ Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
         model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
-        max_tokens=150,
+        max_tokens=600,
+        reasoning_effort="low",
     )
-    raw = resp.choices[0].message.content.strip()
+    raw = (resp.choices[0].message.content or "").strip()
     raw = raw.replace("```json", "").replace("```", "").strip()
+    if not raw:
+        raise ValueError("El modelo no devolvió contenido (respuesta vacía).")
     return json.loads(raw)
 
 
