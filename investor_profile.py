@@ -1,9 +1,10 @@
 """
 investor_profile.py — Cuestionario de perfil de inversor.
-Lógica de preguntas, puntuación, evaluación IA (pregunta 9)
+Lógica de preguntas, puntuación, evaluación IA (preguntas de texto libre)
 y persistencia en Supabase.
 """
 
+import json
 import os
 from database import get_conn
 from dotenv import load_dotenv
@@ -104,8 +105,8 @@ QUESTIONS = [
         "type":  "single",
         "options": [
             (0, "Secundario completo o incompleto / Terciario o universitario en curso"),
-            (1, "Terciario o Universitario completo en áreas NO relacionadas con finanzas"),
-            (3, "Terciario, Universitario o Posgrado en Economía, Finanzas, Administración o afines"),
+            (1, "Terciario o Universitario completo en áreas NO relacionadas con finanzas o economía"),
+            (3, "Terciario, Universitario o Posgrado con formación directa en Economía, Finanzas, Administración o carreras afines"),
         ],
     },
     {
@@ -117,7 +118,7 @@ QUESTIONS = [
             (1,  "Variables / Inestables (trabajos esporádicos o estacionales)"),
             (3,  "Estables, pero cubren lo justo para mis gastos básicos mensuales"),
             (7,  "Estables, con capacidad de ahorro regular (hasta un 20% de mi ingreso)"),
-            (12, "Altos y muy estables, con alta capacidad de ahorro (más del 20%)"),
+            (10, "Altos y muy estables, con alta capacidad de ahorro (más del 20%)"),
         ],
     },
     {
@@ -128,7 +129,7 @@ QUESTIONS = [
         "options": [
             (1, "Soy el único sostén de una familia numerosa (3 o más personas a cargo)"),
             (3, "Tengo familia a cargo, pero comparto los gastos con mi pareja / otro familiar"),
-            (5, "No tengo personas a cargo / Mis ingresos son 100% para mí"),
+            (6, "No tengo personas a cargo / Mis ingresos son 100% para mí"),
         ],
     },
     {
@@ -142,7 +143,7 @@ QUESTIONS = [
             (0,  "Necesito usar este dinero para pagar deudas o gastos fijos el próximo mes"),
             (3,  "Podría necesitar una parte importante de estos fondos en los próximos 6 a 12 meses"),
             (7,  "No tengo gastos grandes previstos a corto plazo, pero me gusta tener liquidez"),
-            (11, "No planeo tocar este dinero, mis gastos cotidianos y emergencias ya están cubiertos"),
+            (10, "No planeo tocar este dinero, mis gastos cotidianos y emergencias ya están cubiertos"),
         ],
     },
     {
@@ -151,10 +152,10 @@ QUESTIONS = [
         "text":  "¿En qué plazo pensás retirar tu inversión?",
         "type":  "single",
         "options": [
-            (2,  "Menos de 1 año (Corto plazo)"),
-            (4,  "Entre 1 y 3 años (Mediano plazo)"),
-            (7,  "Entre 3 y 5 años (Mediano-Largo plazo)"),
-            (11, "Más de 5 años (Largo plazo)"),
+            (0, "Menos de 1 año (Corto plazo)"),
+            (2, "Entre 1 y 3 años (Mediano plazo)"),
+            (6, "Entre 3 y 5 años (Mediano-Largo plazo)"),
+            (8, "Más de 5 años (Largo plazo)"),
         ],
     },
     {
@@ -178,9 +179,9 @@ QUESTIONS = [
         "type":  "single",
         "options": [
             (3,  "Ninguna. Solo conozco cuentas de ahorro, billeteras virtuales o plazos fijos"),
-            (7,  "Básica. Entiendo cómo funcionan bonos y FCI de bajo riesgo"),
-            (11, "Intermedia. Conozco y he operado acciones, CEDEARs o bonos corporativos"),
-            (15, "Avanzada. Entiendo y opero opciones, futuros, ETFs volátiles y/o criptomonedas"),
+            (5,  "Básica. Entiendo cómo funcionan bonos y FCI de bajo riesgo"),
+            (7,  "Intermedia. Conozco y he operado acciones, CEDEARs o bonos corporativos"),
+            (10, "Avanzada. Entiendo y opero opciones, futuros, ETFs volátiles y/o criptomonedas"),
         ],
     },
     {
@@ -192,9 +193,9 @@ QUESTIONS = [
         "auto_value": 0,
         "options": [
             (0,  "Entro en pánico y vendo todo inmediatamente para no seguir perdiendo"),
-            (4,  "Vendo una parte para proteger lo que queda"),
-            (10, "No hago nada, espero a que el mercado se recupere confiando en el largo plazo"),
-            (15, "Aprovecho la caída para comprar más, ya que los activos están más baratos"),
+            (2,  "Vendo una parte para proteger lo que queda"),
+            (6,  "No hago nada, espero a que el mercado se recupere confiando en el largo plazo"),
+            (10, "Aprovecho la caída para comprar más, ya que los activos están más baratos"),
         ],
     },
     {
@@ -204,38 +205,98 @@ QUESTIONS = [
             "Si te ofrecen una inversión que tiene un 50% de probabilidad de duplicar tu dinero "
             "y un 50% de probabilidad de perder la mitad, ¿la tomarías? Contanos por qué."
         ),
-        "type": "text",
+        "type":        "text",
+        "short_label": "Actitud ante la incertidumbre",
+        "max_score":   15,
+        "criteria": (
+            "- 0 a 4 puntos: Rechazo total al riesgo, prioriza la seguridad absoluta.\n"
+            "- 5 a 7 puntos: Duda, la tomaría solo con una pequeña parte de su capital.\n"
+            "- 8 a 15 puntos: Aceptación total, entiende la asimetría riesgo/beneficio y le entusiasma."
+        ),
+    },
+    {
+        "id":   "q10",
+        "dim":  "E — Educación Financiera",
+        "text": (
+            "Si tuvieras que explicarle a un nene de 10 años cuál es la diferencia entre ahorrar e "
+            "invertir, ¿qué ejemplo usarías?"
+        ),
+        "type":        "text",
+        "short_label": "Conocimiento real",
+        "max_score":   10,
+        "criteria": (
+            "- 0 a 4 puntos: Nivel bajo. Da ejemplos confusos o asocia invertir únicamente a dejar el "
+            "dinero en el banco sin comprender el riesgo o el rendimiento.\n"
+            "- 5 a 7 puntos: Nivel medio. Entiende la idea de rendimiento básico y la diferencia entre "
+            "guardar y generar un interés.\n"
+            "- 8 a 10 puntos: Nivel alto. Comprende conceptualmente el riesgo, el costo de oportunidad "
+            "y la multiplicación del capital a través del tiempo."
+        ),
+    },
+    {
+        "id":   "q11",
+        "dim":  "D — Tolerancia Psicológica al Riesgo",
+        "text": (
+            "Un conocido te muestra que ganó mucha plata en pocos días con una criptomoneda nueva de la "
+            "que nunca escuchaste hablar, y te insiste para que inviertas hoy mismo. ¿Qué hacés?"
+        ),
+        "type":                   "text",
+        "short_label":            "Efecto FOMO",
+        "max_score":              10,
+        "detect_auto_conservador": True,
+        "criteria": (
+            "- 0 a 4 puntos (Rechazo total): descarta la oportunidad de plano, prioriza la seguridad de "
+            "su capital y rechaza invertir en instrumentos desconocidos o esquemas de dinero fácil.\n"
+            "- 5 a 7 puntos (Curiosidad cautelosa): muestra curiosidad, pero prioriza investigar a fondo "
+            "antes de arriesgar dinero, o invertiría una cantidad mínima e irrelevante.\n"
+            "- 8 a 10 puntos (Especulación consciente): está dispuesto a aprovechar la oportunidad, pero "
+            "demuestra gestión del riesgo (ej. destinando un porcentaje menor de su cartera asumiendo que "
+            "puede perderlo todo)."
+        ),
     },
 ]
 
 # ──────────────────────────────────────────────
-# Evaluación IA — pregunta 9
+# Evaluación IA — preguntas de texto libre
 # ──────────────────────────────────────────────
 
-def evaluate_q9_with_ai(answer_text: str) -> tuple:
+def evaluate_open_answer(question: dict, answer_text: str) -> tuple:
     """
-    Usa Groq LLaMA para evaluar la respuesta de texto libre de la pregunta 9.
-    Devuelve (score: int, explanation: str)
+    Usa Groq (openai/gpt-oss-120b) para evaluar una respuesta de texto libre
+    de cualquiera de las preguntas abiertas del cuestionario.
+
+    Devuelve (score: int, explanation: str, auto_conservador: bool)
     """
+    max_score = question.get("max_score", 10)
+    fallback_score = max_score // 2
+
     try:
         from groq import Groq
         api_key = os.getenv("GROQ_API_KEY", "")
         if not api_key or api_key == "YOUR_GROQ_API_KEY_HERE":
-            # Fallback: puntaje medio si no hay API
-            return 7, "Evaluación manual no disponible (sin API key)."
+            return fallback_score, "Evaluación manual no disponible (sin API key).", False
 
         client = Groq(api_key=api_key)
-        prompt = f"""Sos un evaluador de perfiles de inversión. Analizá la siguiente respuesta y asignale un puntaje del 0 al 15 según la actitud hacia el riesgo financiero.
 
+        auto_instruction = ""
+        if question.get("detect_auto_conservador"):
+            auto_instruction = (
+                "\n\nADEMÁS: Si la respuesta indica que el usuario invertiría la totalidad o gran parte "
+                "de su capital de forma apresurada persiguiendo un rendimiento explosivo, sin comprender "
+                "el riesgo que asume, marcá \"auto_conservador\": true (esto indica desconocimiento del "
+                "riesgo y fuerza perfil Conservador). En cualquier otro caso, marcá \"auto_conservador\": false."
+            )
+
+        prompt = f"""Sos un evaluador de perfiles de inversión. Analizá la siguiente respuesta a una pregunta abierta y asignale un puntaje según los criterios.
+
+Pregunta: "{question['text']}"
 Respuesta del usuario: "{answer_text}"
 
-Criterios de puntuación:
-- 0 a 4 puntos: Rechazo total al riesgo. El usuario prioriza la seguridad absoluta, no tomaría ningún riesgo.
-- 5 a 10 puntos: Actitud moderada. Dudaría, la tomaría solo con una pequeña parte de su capital.
-- 11 a 15 puntos: Aceptación total del riesgo. Entiende la asimetría riesgo/beneficio y le entusiasma.
+Criterios de puntuación (máximo {max_score} puntos):
+{question.get('criteria', '')}{auto_instruction}
 
-Respondé ÚNICAMENTE con JSON válido sin texto adicional:
-{{"score": 7, "explanation": "breve explicación de 1 oración del porqué del puntaje"}}"""
+Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
+{{"score": 0, "explanation": "breve explicación de 1 oración del porqué del puntaje", "auto_conservador": false}}"""
 
         resp = client.chat.completions.create(
             model="openai/gpt-oss-120b",
@@ -244,17 +305,18 @@ Respondé ÚNICAMENTE con JSON válido sin texto adicional:
             max_tokens=500,
             reasoning_effort="low",
         )
-        import json
-        raw  = (resp.choices[0].message.content or "").strip()
-        raw  = raw.replace("```json", "").replace("```", "").strip()
+        raw = (resp.choices[0].message.content or "").strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
         if not raw:
-            return 7, "Evaluación IA no disponible (respuesta vacía del modelo)."
-        data = json.loads(raw)
-        score = max(0, min(15, int(data.get("score", 7))))
+            return fallback_score, "Evaluación IA no disponible (respuesta vacía del modelo).", False
+
+        data  = json.loads(raw)
+        score = max(0, min(max_score, int(data.get("score", fallback_score))))
         expl  = data.get("explanation", "")
-        return score, expl
+        auto  = bool(data.get("auto_conservador", False)) if question.get("detect_auto_conservador") else False
+        return score, expl, auto
     except Exception as e:
-        return 7, f"Error en evaluación IA: {str(e)}"
+        return fallback_score, f"Error en evaluación IA: {str(e)}", False
 
 
 # ──────────────────────────────────────────────
@@ -265,14 +327,13 @@ def calculate_profile(answers: dict) -> dict:
     """
     answers: {question_id: value}
       - Para preguntas de opción múltiple: value = puntaje (int)
-      - Para q9 (texto): value = texto libre (str)
+      - Para preguntas de texto libre (q9, q10, q11): value = texto libre (str)
 
-    Devuelve dict con score, profile_name, profile_data, auto_conservador, q9_score, q9_explanation
+    Devuelve dict con score, profile_name, profile_data, auto_conservador, text_evaluations
     """
-    total       = 0
-    auto_cons   = False
-    q9_score    = 0
-    q9_expl     = ""
+    total            = 0
+    auto_cons        = False
+    text_evaluations = []  # [{id, label, score, max_score, explanation}, ...]
 
     for q in QUESTIONS:
         qid = q["id"]
@@ -280,8 +341,17 @@ def calculate_profile(answers: dict) -> dict:
             continue
 
         if q["type"] == "text":
-            q9_score, q9_expl = evaluate_q9_with_ai(str(answers[qid]))
-            total += q9_score
+            score, expl, ai_auto = evaluate_open_answer(q, str(answers[qid]))
+            total += score
+            text_evaluations.append({
+                "id":         qid,
+                "label":      q.get("short_label", q["text"][:40]),
+                "score":      score,
+                "max_score":  q.get("max_score", 10),
+                "explanation": expl,
+            })
+            if ai_auto:
+                auto_cons = True
         else:
             val = int(answers[qid])
             total += val
@@ -305,12 +375,11 @@ def calculate_profile(answers: dict) -> dict:
         profile = PROFILES[-1]
 
     return {
-        "score":           total,
-        "profile_name":    profile["name"],
-        "profile":         profile,
-        "auto_conservador":auto_cons,
-        "q9_score":        q9_score,
-        "q9_explanation":  q9_expl,
+        "score":            total,
+        "profile_name":     profile["name"],
+        "profile":          profile,
+        "auto_conservador": auto_cons,
+        "text_evaluations": text_evaluations,
     }
 
 
