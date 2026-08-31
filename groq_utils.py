@@ -78,7 +78,7 @@ Respondé ÚNICAMENTE con JSON válido, sin texto adicional:
 {{"type":"expense","amount":0.0,"category_id":1,"description":"descripción","date":"YYYY-MM-DD"}}"""
 
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.1,
         max_tokens=150,
@@ -147,7 +147,7 @@ Generá el reporte con exactamente estas secciones en markdown:
 Usá los números reales. Sé específico y práctico. Máximo 600 palabras en total."""
 
     resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
         max_tokens=1200,
