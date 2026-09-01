@@ -1321,7 +1321,7 @@ def _render_questionnaire(uid, show_intro=True):
                     dbc.Button("🎙️ Grabar audio", id=f"survey-rec-start-{qid}", color="danger",
                                size="sm", n_clicks=0, className="me-2 mt-2"),
                     dbc.Button("⏹️ Detener", id=f"survey-rec-stop-{qid}", color="secondary",
-                               size="sm", n_clicks=0, className="mt-2", disabled=True),
+                               size="sm", n_clicks=0, className="mt-2"),
                     html.Span("", id=f"survey-rec-status-{qid}",
                               style={"marginLeft": "10px", "color": C["muted"], "fontSize": "0.85rem"}),
                 ], style={"display": "flex", "alignItems": "center"}),
