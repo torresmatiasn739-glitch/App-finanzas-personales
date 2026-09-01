@@ -39,6 +39,7 @@ from analytics import (
 init_db()
 from investor_profile import init_profile_table
 init_profile_table()
+from investor_profile import QUESTIONS as INVESTOR_QUESTIONS
 
 # ── Iniciar bot de Telegram en hilo paralelo ──
 import threading
@@ -187,6 +188,9 @@ app.layout = dbc.Container([
     dcc.Interval(id="voice-poll-interval", interval=500, n_intervals=0),
     html.Div(id="voice-start-dummy", style={"display": "none"}),
     html.Div(id="voice-stop-dummy",  style={"display": "none"}),
+
+    # Polling para transcripción de audio en preguntas abiertas del test de inversor
+    dcc.Interval(id="survey-voice-poll-interval", interval=500, n_intervals=0),
 
     # Contenido principal (auth o app)
     html.Div(id="main-content", children=auth_panel()),
@@ -1303,15 +1307,26 @@ def _render_questionnaire(uid, show_intro=True):
                                inputStyle={"marginRight": "8px"}),
             ]), style=cs(), className="mb-2")
         else:
+            qid = q["id"]
             card = dbc.Card(dbc.CardBody([
                 dbc.Label(q["text"],
                           style={"color": C["text"], "fontWeight": "600", "marginBottom": "10px"}),
                 html.Small(f"Esta respuesta será evaluada por IA (0 a {q.get('max_score', 10)} puntos)",
                            style={"color": C["primary"], "display": "block", "marginBottom": "8px"}),
-                dbc.Textarea(id=f"iq-{q['id']}", placeholder="Escribí tu respuesta aquí...",
+                dbc.Textarea(id=f"iq-{qid}", placeholder="Escribí tu respuesta aquí, o grabá un audio...",
                              style={"backgroundColor": C["bg_card"], "color": C["text"],
                                     "border": f"1px solid {C['border']}"},
                              rows=4),
+                html.Div([
+                    dbc.Button("🎙️ Grabar audio", id=f"survey-rec-start-{qid}", color="danger",
+                               size="sm", n_clicks=0, className="me-2 mt-2"),
+                    dbc.Button("⏹️ Detener", id=f"survey-rec-stop-{qid}", color="secondary",
+                               size="sm", n_clicks=0, className="mt-2", disabled=True),
+                    html.Span("", id=f"survey-rec-status-{qid}",
+                              style={"marginLeft": "10px", "color": C["muted"], "fontSize": "0.85rem"}),
+                ], style={"display": "flex", "alignItems": "center"}),
+                html.Div(id=f"survey-rec-start-dummy-{qid}", style={"display": "none"}),
+                html.Div(id=f"survey-rec-stop-dummy-{qid}",  style={"display": "none"}),
             ]), style=cs(C["primary"]), className="mb-2")
 
         question_cards.append(card)
@@ -1417,6 +1432,146 @@ def process_audio():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": f"Error al procesar audio: {str(e)}"}), 500
+
+
+@app.server.route("/transcribe-audio", methods=["POST"])
+def transcribe_audio_route():
+    """Transcribe un audio a texto plano, sin extraer transacción.
+    Usado por las preguntas abiertas del test de perfil de inversor."""
+    try:
+        from groq_utils import transcribe_audio
+        audio_file = request.files.get("audio")
+        if not audio_file:
+            return jsonify({"error": "Sin archivo de audio"}), 400
+
+        audio_bytes   = audio_file.read()
+        transcription = transcribe_audio(audio_bytes, "webm")
+        return jsonify({"transcription": transcription})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Error al transcribir audio: {str(e)}"}), 500
+
+
+# ──────────────────────────────────────────────
+# Callbacks de Voz — preguntas abiertas del test de inversor
+# ──────────────────────────────────────────────
+# Se generan dinámicamente, uno por cada pregunta de tipo "text" definida en
+# investor_profile.QUESTIONS. Si en el futuro se agregan/quitan preguntas
+# abiertas, estos callbacks se ajustan solos sin tocar este archivo.
+
+for _q in INVESTOR_QUESTIONS:
+    if _q["type"] != "text":
+        continue
+    _qid = _q["id"]
+
+    # — Iniciar grabación —
+    app.clientside_callback(
+        f"""
+        function(n) {{
+            if (!n) return window.dash_clientside.no_update;
+            var qid = "{_qid}";
+            var statusEl = document.getElementById('survey-rec-status-' + qid);
+            var startBtn = document.getElementById('survey-rec-start-' + qid);
+            var stopBtn  = document.getElementById('survey-rec-stop-' + qid);
+            navigator.mediaDevices.getUserMedia({{audio: true}})
+                .then(function(stream) {{
+                    window._surveyStreams   = window._surveyStreams   || {{}};
+                    window._surveyChunks    = window._surveyChunks    || {{}};
+                    window._surveyRecorders = window._surveyRecorders || {{}};
+                    window._surveyStreams[qid] = stream;
+                    window._surveyChunks[qid]  = [];
+                    var opts = MediaRecorder.isTypeSupported('audio/webm') ? {{mimeType: 'audio/webm'}} : {{}};
+                    var mr = new MediaRecorder(stream, opts);
+                    mr.ondataavailable = function(e) {{
+                        if (e.data.size > 0) window._surveyChunks[qid].push(e.data);
+                    }};
+                    mr.start(100);
+                    window._surveyRecorders[qid] = mr;
+                    if (statusEl) statusEl.innerHTML = '<span style="color:#ff5c5c">&#9679; Grabando...</span>';
+                    if (startBtn) startBtn.disabled = true;
+                    if (stopBtn)  stopBtn.disabled  = false;
+                }})
+                .catch(function(err) {{
+                    if (statusEl) statusEl.innerText = '❌ Error al acceder al micrófono: ' + err.message;
+                }});
+            return window.dash_clientside.no_update;
+        }}
+        """,
+        Output(f"survey-rec-start-dummy-{_qid}", "children"),
+        Input(f"survey-rec-start-{_qid}", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
+    # — Detener grabación y transcribir —
+    app.clientside_callback(
+        f"""
+        function(n) {{
+            var qid = "{_qid}";
+            if (!n || !window._surveyRecorders || !window._surveyRecorders[qid]) {{
+                return window.dash_clientside.no_update;
+            }}
+            var statusEl = document.getElementById('survey-rec-status-' + qid);
+            var startBtn = document.getElementById('survey-rec-start-' + qid);
+            var stopBtn  = document.getElementById('survey-rec-stop-' + qid);
+            var mr = window._surveyRecorders[qid];
+            mr.onstop = function() {{
+                var mime = mr.mimeType || 'audio/webm';
+                var blob = new Blob(window._surveyChunks[qid], {{type: mime}});
+                if (window._surveyStreams[qid]) {{
+                    window._surveyStreams[qid].getTracks().forEach(function(t) {{ t.stop(); }});
+                }}
+                var fd = new FormData();
+                fd.append('audio', blob, 'recording.webm');
+                if (statusEl) statusEl.innerHTML = '<span style="color:#ffb84d">&#9203; Transcribiendo...</span>';
+                fetch('/transcribe-audio', {{method: 'POST', body: fd}})
+                    .then(function(r) {{ return r.json(); }})
+                    .then(function(data) {{
+                        localStorage.setItem('_surveyVoiceResult_' + qid, JSON.stringify(data));
+                        if (data.error) {{
+                            if (statusEl) statusEl.innerHTML = '<span style="color:#ff5c5c">&#10007; ' + data.error + '</span>';
+                        }} else {{
+                            if (statusEl) statusEl.innerHTML = '<span style="color:#00d4aa">&#10003; Transcripto</span>';
+                        }}
+                    }})
+                    .catch(function(err) {{
+                        localStorage.setItem('_surveyVoiceResult_' + qid, JSON.stringify({{error: String(err)}}));
+                        if (statusEl) statusEl.innerHTML = '<span style="color:#ff5c5c">&#10007; Error</span>';
+                    }})
+                    .finally(function() {{
+                        if (startBtn) startBtn.disabled = false;
+                        if (stopBtn)  stopBtn.disabled  = true;
+                    }});
+            }};
+            mr.stop();
+            return window.dash_clientside.no_update;
+        }}
+        """,
+        Output(f"survey-rec-stop-dummy-{_qid}", "children"),
+        Input(f"survey-rec-stop-{_qid}", "n_clicks"),
+        prevent_initial_call=True,
+    )
+
+    # — Volcar la transcripción al Textarea de la pregunta —
+    app.clientside_callback(
+        f"""
+        function(n_intervals, currentValue) {{
+            var key = '_surveyVoiceResult_{_qid}';
+            var raw = localStorage.getItem(key);
+            if (!raw) return window.dash_clientside.no_update;
+            localStorage.removeItem(key);
+            var data;
+            try {{ data = JSON.parse(raw); }} catch (e) {{ return window.dash_clientside.no_update; }}
+            if (data.error || !data.transcription) return window.dash_clientside.no_update;
+            var existing = (currentValue || '').trim();
+            return existing ? (existing + ' ' + data.transcription) : data.transcription;
+        }}
+        """,
+        Output(f"iq-{_qid}", "value"),
+        Input("survey-voice-poll-interval", "n_intervals"),
+        State(f"iq-{_qid}", "value"),
+        prevent_initial_call=True,
+    )
 
 
 # ──────────────────────────────────────────────
