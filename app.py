@@ -24,7 +24,7 @@ from database import (
     get_secret_question, verify_secret_answer, reset_password,
     SECURITY_QUESTIONS,
     get_categories, add_transaction, delete_transaction,
-    get_transactions, get_monthly_summary, get_expenses_by_category,
+    get_transactions, get_recent_transactions, get_monthly_summary, get_expenses_by_category,
     get_monthly_detail,
 )
 from analytics import (
@@ -367,9 +367,122 @@ def render_tab(tab, _, uid):
     return html.Div()
 
 
+# — Simulador de tasa de ahorro (gráfico de evolución del balance) —
+
+@app.callback(
+    Output("collapse-rate-sim", "is_open"),
+    Input("btn-toggle-rate-sim", "n_clicks"),
+    State("collapse-rate-sim", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_rate_sim(n, is_open):
+    return not is_open
+
+
+@app.callback(
+    Output("balance-evolution-graph", "figure"),
+    Output("rate-sim-feedback", "children"),
+    Input("btn-apply-rate", "n_clicks"),
+    Input("btn-reset-rate", "n_clicks"),
+    State("input-custom-rate", "value"),
+    State("dashboard-mobile-flag", "data"),
+    State("active-user-id", "data"),
+    prevent_initial_call=True,
+)
+def update_balance_projection(n_apply, n_reset, custom_rate, mobile, uid):
+    if not uid:
+        return no_update, no_update
+    ctx = callback_context
+    trigger = ctx.triggered[0]["prop_id"].split(".")[0] if ctx.triggered else ""
+
+    if trigger == "btn-reset-rate":
+        proj, _, _ = _compute_balance_projection(uid)
+        fig = _build_balance_figure(proj, mobile=mobile, override_rate=None)
+        return fig, dbc.Alert("Mostrando el balance según tu tasa de ahorro promedio real.",
+                               color="secondary", duration=3000)
+
+    # btn-apply-rate
+    if custom_rate is None:
+        return no_update, dbc.Alert("Ingresá una tasa de ahorro para simular.", color="warning", duration=3000)
+    if custom_rate < 0 or custom_rate > 100:
+        return no_update, dbc.Alert("La tasa de ahorro debe estar entre 0% y 100%.", color="danger", duration=4000)
+
+    rate = custom_rate / 100.0
+    proj, _, _ = _compute_balance_projection(uid, override_rate=rate)
+    fig = _build_balance_figure(proj, mobile=mobile, override_rate=rate)
+    return fig, dbc.Alert(f"Mostrando proyección simulada con una tasa de ahorro del {custom_rate:.0f}%.",
+                           color="info", duration=4000)
+
+
 # ══════════════════════════════════════════════
 # TAB 1 — Dashboard
 # ══════════════════════════════════════════════
+
+def _compute_balance_projection(uid, override_rate=None):
+    """
+    Calcula la proyección de flujo de fondos usando la tasa de ahorro promedio
+    real del usuario (o una tasa custom si se pasa override_rate, 0..1).
+    Devuelve (proj, avg_savings_rate, rate_used).
+    """
+    current_ym = datetime.now().strftime("%Y-%m")
+    mdf_all = get_monthly_summary(uid)
+    avg_savings_rate = 0.0
+    if not mdf_all.empty:
+        real_months = sorted([m for m in mdf_all["month"].unique() if m <= current_ym])
+        rates = []
+        for m in real_months:
+            inc = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="income")]["total"].sum())
+            exp = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="expense")]["total"].sum())
+            if inc > 0 and exp > 0:
+                rates.append((inc - exp) / inc)
+        avg_savings_rate = sum(rates) / len(rates) if rates else 0.0
+
+    rate_used = override_rate if override_rate is not None else avg_savings_rate
+
+    proj = get_cash_flow_projection(uid, 3, 4)
+    running = 0.0
+    for i, p in enumerate(proj):
+        if not p["is_future"]:
+            running = p["balance"]
+        else:
+            projected_net = p["income"] * rate_used if p["income"] > 0 else p["net"]
+            running += projected_net
+            proj[i] = {**p, "net": projected_net, "balance": running}
+
+    return proj, avg_savings_rate, rate_used
+
+
+def _build_balance_figure(proj, mobile=False, override_rate=None):
+    """Construye la figura de Plotly de evolución de balance a partir de una proyección ya calculada."""
+    pf = pd.DataFrame(proj)
+    fl = go.Figure()
+    if not pf.empty:
+        past = pf[~pf.is_future]; fut = pf[pf.is_future]
+        fl.add_trace(go.Scatter(x=past.month, y=past.balance, name="Balance real",
+            line=dict(color=C["primary"], width=2.5), fill="tozeroy", fillcolor="rgba(0,212,170,0.08)"))
+        if not fut.empty:
+            fl.add_trace(go.Scatter(x=pd.concat([past.tail(1), fut]).month,
+                y=pd.concat([past.tail(1), fut]).balance, name="Proyectado",
+                line=dict(color=C["warning"], width=2, dash="dot")))
+
+    if override_rate is not None:
+        title = f"Evolución del balance con tasa de ahorro simulada ({override_rate*100:.0f}%)"
+    else:
+        title = "Evolución del balance en base a tasa de ahorro promedio"
+
+    if mobile:
+        fl.update_layout(**cl(title, {
+            "height": 250,
+            "margin": dict(t=40, b=40, l=30, r=10),
+            "font": dict(size=10),
+            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
+            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
+            "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
+        }))
+    else:
+        fl.update_layout(**cl(title, {"height": 300}))
+    return fl
+
 
 def build_dashboard(uid, mobile=False):
     ym   = datetime.now().strftime("%Y-%m")
@@ -439,57 +552,40 @@ def build_dashboard(uid, mobile=False):
         fp = go.Figure()
         fp.update_layout(**cl(f"Gastos por Rubro ({ym}) — Sin datos"))
 
-    # ── Balance projection using simple avg savings rate per month ──
-    # Solo meses reales (hasta el mes actual) para evitar distorsión de meses proyectados
-    current_ym = datetime.now().strftime("%Y-%m")
-    mdf_all = get_monthly_summary(uid)
-    avg_savings_rate = 0.0
-    if not mdf_all.empty:
-        # Filtrar solo meses reales <= mes actual
-        real_months = sorted([m for m in mdf_all["month"].unique() if m <= current_ym])
-        rates = []
-        for m in real_months:
-            inc = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="income")]["total"].sum())
-            exp = float(mdf_all[(mdf_all["month"]==m) & (mdf_all["type"]=="expense")]["total"].sum())
-            if inc > 0 and exp > 0:
-                # Tasa mensual individual: (ingreso - gasto) / ingreso
-                rates.append((inc - exp) / inc)
-        # Promedio simple: suma de tasas / cantidad de meses reales
-        avg_savings_rate = sum(rates) / len(rates) if rates else 0.0
+    # ── Balance projection: usa la tasa de ahorro promedio real por defecto ──
+    proj, avg_savings_rate, _ = _compute_balance_projection(uid)
+    fl = _build_balance_figure(proj, mobile=mobile, override_rate=None)
 
-    proj = get_cash_flow_projection(uid, 3, 4)
-    # Override future balance using avg savings rate applied to projected income
-    running = 0.0
-    for i, p in enumerate(proj):
-        if not p["is_future"]:
-            running = p["balance"]
-        else:
-            # Use avg savings rate * projected income as net for future months
-            projected_net = p["income"] * avg_savings_rate if p["income"] > 0 else p["net"]
-            running += projected_net
-            proj[i] = {**p, "net": projected_net, "balance": running}
-
-    pf   = pd.DataFrame(proj)
-    fl   = go.Figure()
-    if not pf.empty:
-        past = pf[~pf.is_future]; fut = pf[pf.is_future]
-        fl.add_trace(go.Scatter(x=past.month, y=past.balance, name="Balance real",
-            line=dict(color=C["primary"], width=2.5), fill="tozeroy", fillcolor="rgba(0,212,170,0.08)"))
-        if not fut.empty:
-            fl.add_trace(go.Scatter(x=pd.concat([past.tail(1), fut]).month,
-                y=pd.concat([past.tail(1), fut]).balance, name="Proyectado",
-                line=dict(color=C["warning"], width=2, dash="dot")))
-    if mobile:
-        fl.update_layout(**cl("Balance", {
-            "height": 250,
-            "margin": dict(t=40, b=40, l=30, r=10),
-            "font": dict(size=10),
-            "xaxis": dict(tickangle=-35, tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
-            "yaxis": dict(tickfont=dict(size=9), gridcolor=GRID_COL, fixedrange=True),
-            "legend": dict(orientation="h", y=1.12, x=0, font=dict(size=10)),
-        }))
-    else:
-        fl.update_layout(**cl("Evolución del Balance", {"height": 300}))
+    # ── Card del gráfico de balance, con "pestañita" de simulación de tasa ──
+    balance_card = dbc.Card([
+        dbc.CardHeader(
+            html.Div([
+                html.Span("📈  Evolución del balance",
+                          style={"color": C["primary"], "fontWeight": "700", "fontSize": "0.95rem"}),
+                dbc.Button("🎯 Simular tasa", id="btn-toggle-rate-sim", size="sm",
+                           color="outline-secondary", n_clicks=0,
+                           style={"float": "right", "fontSize": "0.75rem", "padding": "2px 10px"}),
+            ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"})
+        ),
+        dbc.Collapse(
+            dbc.CardBody([
+                dbc.Row([
+                    dbc.Col(dbc.Input(id="input-custom-rate", type="number", min=0, max=100, step=1,
+                                       placeholder="Tasa de ahorro a simular (%)"), md=6, className="mb-2"),
+                    dbc.Col(dbc.Button("Aplicar", id="btn-apply-rate", color="success",
+                                        size="sm", n_clicks=0, className="me-2"), md=3, className="mb-2"),
+                    dbc.Col(dbc.Button("Volver al promedio", id="btn-reset-rate", color="secondary",
+                                        size="sm", n_clicks=0), md=3, className="mb-2"),
+                ]),
+                html.Div(id="rate-sim-feedback"),
+            ]),
+            id="collapse-rate-sim", is_open=False,
+        ),
+        dbc.CardBody(dcc.Graph(id="balance-evolution-graph", figure=fl,
+                                config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
+                                responsive=True)),
+        dcc.Store(id="dashboard-mobile-flag", data=mobile),
+    ], style=cs(), className="mb-3")
 
     # ── Monthly detail table ──
     det_rows = [{"Mes": p["month"],
@@ -514,7 +610,7 @@ def build_dashboard(uid, mobile=False):
         )),
     ], style=cs(), className="mb-3")
 
-    txs = get_transactions(uid)[:8]
+    txs = get_recent_transactions(uid, 8)
     # Mobile: tabla simplificada con menos columnas
     if mobile:
         tbl_data    = [{"Tipo": "▲" if t[1]=="income" else "▼",
@@ -545,7 +641,7 @@ def build_dashboard(uid, mobile=False):
             kpi_row,
             dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
             dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
-            dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+            balance_card,
             detail_table,
             dbc.Card([
                 dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
@@ -559,7 +655,7 @@ def build_dashboard(uid, mobile=False):
             dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fb, config=graph_cfg, responsive=True)), style=cs()), md=7, className="mb-3"),
             dbc.Col(dbc.Card(dbc.CardBody(dcc.Graph(figure=fp, config=graph_cfg, responsive=True)), style=cs()), md=5, className="mb-3"),
         ]),
-        dbc.Card(dbc.CardBody(dcc.Graph(figure=fl, config=graph_cfg, responsive=True)), style=cs(), className="mb-3"),
+        balance_card,
         detail_table,
         dbc.Card([
             dbc.CardHeader(html.H6("Últimas Transacciones", style={"color":C["primary"],"margin":"0"})),
@@ -796,7 +892,8 @@ def _month_options(n=12):
     for i in range(1, n + 1):
         m = today.month - i; y = today.year
         while m <= 0: m += 12; y -= 1
-        opts.append({"label": f"{names[m-1]} {y}", "value": f"{y}-{m:02d}"})
+        label = f"{names[m-1]} 🍋 {y}" if m == 4 else f"{names[m-1]} {y}"
+        opts.append({"label": label, "value": f"{y}-{m:02d}"})
     return opts
 
 def build_report(uid):
@@ -1311,7 +1408,7 @@ def _render_questionnaire(uid, show_intro=True):
             card = dbc.Card(dbc.CardBody([
                 dbc.Label(q["text"],
                           style={"color": C["text"], "fontWeight": "600", "marginBottom": "10px"}),
-                html.Small(f"Esta respuesta será evaluada por IA (0 a {q.get('max_score', 10)} puntos)",
+                html.Small("Esta respuesta será evaluada por la IA",
                            style={"color": C["primary"], "display": "block", "marginBottom": "8px"}),
                 dbc.Textarea(id=f"iq-{qid}", placeholder="Escribí tu respuesta aquí, o grabá un audio...",
                              style={"backgroundColor": C["bg_card"], "color": C["text"],
@@ -1375,12 +1472,11 @@ def submit_profile(n, *args):
             extra.append(dbc.Alert(
                 "⚠️  Una de tus respuestas indica perfil Conservador automático. "
                 "El puntaje fue ajustado.", color="warning", className="mb-3"))
-        for ev in result.get("text_evaluations", []):
-            if ev.get("explanation"):
-                extra.append(dbc.Alert([
-                    html.Strong(f"🤖  Evaluación IA — {ev['label']}: "),
-                    f"{ev['explanation']} ({ev['score']}/{ev['max_score']} pts)"
-                ], color="info", className="mb-3"))
+        if result["q9_explanation"]:
+            extra.append(dbc.Alert([
+                html.Strong("🤖  Evaluación IA (pregunta 9): "),
+                f"{result['q9_explanation']} ({result['q9_score']}/15 pts)"
+            ], color="info", className="mb-3"))
         return html.Div(extra + [_render_profile_result(result, uid, show_redo=False)])
     except Exception as e:
         return dbc.Alert(f"Error al calcular perfil: {str(e)}", color="danger")

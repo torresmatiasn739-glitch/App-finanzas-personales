@@ -287,6 +287,28 @@ def get_transactions(user_id: int, start_date: str = None, end_date: str = None)
     conn.close()
     return rows
 
+def get_recent_transactions(user_id: int, limit: int = 8) -> list:
+    """
+    Últimas transacciones CARGADAS por el usuario (orden por fecha de carga real,
+    created_at), no por la fecha de la transacción. Así, si el usuario programó
+    pagos a futuro (recurrentes), esos no tapan lo que efectivamente acaba de
+    registrar — sirve para que recuerde si ya cargó algo o no.
+    """
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT t.id, t.type, t.amount, cat.name, t.description,
+               t.date::text, t.is_recurring, t.has_reminder
+        FROM transactions t
+        LEFT JOIN categories cat ON t.category_id = cat.id
+        WHERE t.user_id = %s
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT %s
+    """, (user_id, limit))
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
 def get_pending_reminders(user_id: int) -> list:
     conn = get_conn()
     c = conn.cursor()

@@ -118,7 +118,7 @@ def _sheet_transactions(wb, transactions, year_month):
             cell.number_format = '$#,##0.00'
 
     # Anchos de columna
-    widths = [14, 32, 20, 12, 16]
+    widths = [14, 32, 20, 12, 16, 16]
     for col, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
@@ -303,7 +303,7 @@ def _sheet_summary(wb, data, report_text, projection):
               align=_center(), italic=True, merge_to=8)
 
     # Anchos columnas
-    for col, w in enumerate([22, 4, 22, 4, 14, 4, 16, 4], 1):
+    for col, w in enumerate([22, 14, 12, 4, 22, 14, 12, 4], 1):
         ws.column_dimensions[get_column_letter(col)].width = w
 
     ws.sheet_properties.tabColor = C_WARNING
