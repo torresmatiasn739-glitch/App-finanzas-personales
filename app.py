@@ -583,7 +583,8 @@ def build_dashboard(uid, mobile=False):
         ),
         dbc.CardBody(dcc.Graph(id="balance-evolution-graph", figure=fl,
                                 config={"displayModeBar": False, "scrollZoom": False, "doubleClick": False},
-                                responsive=True)),
+                                responsive=True,
+                                style={"height": "250px" if mobile else "300px"})),
         dcc.Store(id="dashboard-mobile-flag", data=mobile),
     ], style=cs(), className="mb-3")
 
