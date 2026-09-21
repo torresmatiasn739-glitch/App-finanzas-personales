@@ -1,5 +1,5 @@
 """
-app.py — Aplicación principal de Finanzas Personales.
+app.py — Aplicación principal de FinTrack.
 Nuevas funcionalidades: contraseña, recordatorios, reporte IA, chat de voz.
 
 Ejecutar:
@@ -75,7 +75,7 @@ app = dash.Dash(
     __name__,
     external_stylesheets=[dbc.themes.CYBORG],
     suppress_callback_exceptions=True,
-    title="Finanzas Personales",
+    title="FinTrack",
     meta_tags=[{"name": "viewport", "content": "width=device-width, initial-scale=1.0"}],
 )
 
@@ -134,6 +134,11 @@ def auth_panel():
         dbc.Input(id="inp-pass", placeholder="Tu contraseña", type="password", className="mb-3"),
         dbc.Button("Ingresar", id="btn-login", color="success", n_clicks=0, className="w-100"),
         html.Div(id="login-feedback", className="mt-3"),
+        html.P([
+            "Creado por ",
+            html.A("Matias Torres", href="https://www.linkedin.com/in/matias-torres-178885438/", 
+                   target="_blank", style={"color": C["primary"], "textDecoration": "none", "fontWeight": "600"})
+        ], style={"color": C["muted"], "fontSize": "0.8rem", "marginTop": "16px", "textAlign": "center"}),
     ]))
 
     register_tab = dbc.Tab(label="✏️  Registrarse", tab_id="auth-register", children=dbc.CardBody([
@@ -165,7 +170,7 @@ def auth_panel():
 
     return html.Div([
         html.Div([
-            html.H2("💰 Finanzas Personales",
+            html.H2("💰 FinTrack",
                     style={"color": C["primary"], "fontWeight": "800", "textAlign": "center", "margin": "0"}),
             html.P("Gestión inteligente de tu dinero",
                    style={"color": C["muted"], "textAlign": "center", "marginBottom": "24px"}),
@@ -208,7 +213,7 @@ app.layout = dbc.Container([
 
 def _build_app_layout(username, user_id):
     header = html.Div([
-        html.H2("💰 Finanzas Personales",
+        html.H2("💰 FinTrack",
                 style={"color": C["primary"], "fontWeight": "800", "margin": "0", "display": "inline"}),
         dbc.Button("Cerrar sesión", id="btn-logout", color="outline-secondary", size="sm",
                    n_clicks=0, style={"float": "right", "marginTop": "4px"}),
@@ -674,6 +679,12 @@ def build_transactions(uid):
     def opts(cats, e): return [{"label": f"{e} {c[1]}", "value": c[0]} for c in cats]
     txs = get_transactions(uid)
 
+    telegram_alert = dbc.Alert([
+        html.Strong("📱 ¡Carga los datos con Telegram! ", style={"color": C["primary"]}),
+        html.Span(f"Buscanos como @FinanzasPersonalesUnlp_bot. Inicia el bot, ingresa tu usuario y contraseña, y ¡listo! Ya podés cargar tus transacciones.",
+                  style={"color": C["text"]})
+    ], color="info", className="mb-3", style={"borderLeft": f"4px solid {C['primary']}"})
+
     form = dbc.Card([
         dbc.CardHeader(html.H6("➕  Nueva Transacción", style={"color":C["primary"],"margin":"0","fontWeight":"700"})),
         dbc.CardBody([
@@ -720,7 +731,7 @@ def build_transactions(uid):
             ],
         )),
     ], style=cs())
-    return html.Div([form, table_card])
+    return html.Div([telegram_alert, form, table_card])
 
 def _tx_rows(txs):
     return [{"ID":t[0],"Tipo":"INGRESO" if t[1]=="income" else "GASTO","Monto":f"${t[2]:,.2f}",
