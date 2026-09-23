@@ -1484,11 +1484,12 @@ def submit_profile(n, *args):
             extra.append(dbc.Alert(
                 "⚠️  Una de tus respuestas indica perfil Conservador automático. "
                 "El puntaje fue ajustado.", color="warning", className="mb-3"))
-        if result["q9_explanation"]:
-            extra.append(dbc.Alert([
-                html.Strong("🤖  Evaluación IA (pregunta 9): "),
-                f"{result['q9_explanation']} ({result['q9_score']}/15 pts)"
-            ], color="info", className="mb-3"))
+        for ev in result.get("text_evaluations", []):
+            if ev.get("explanation"):
+                extra.append(dbc.Alert([
+                    html.Strong(f"🤖  Evaluación IA — {ev['label']}: "),
+                    f"{ev['explanation']} ({ev['score']}/{ev['max_score']} pts)"
+                ], color="info", className="mb-3"))
         return html.Div(extra + [_render_profile_result(result, uid, show_redo=False)])
     except Exception as e:
         return dbc.Alert(f"Error al calcular perfil: {str(e)}", color="danger")
